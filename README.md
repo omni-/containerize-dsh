@@ -53,6 +53,55 @@ home and workspace volumes. Do not run two sandboxes against the same volumes.
 `--port` changes the localhost port. Global options precede the command.
 `up` creates/recreates the container without building; run `build` after image changes.
 
+## Saved user profiles
+
+For frequently used plugins, create a `containerize-dsh/profiles.json` file in
+your user config directory (create its parent directory if needed):
+
+- Windows: `%APPDATA%\containerize-dsh\profiles.json` (normally under `AppData\Roaming`).
+- macOS: `~/Library/Application Support/containerize-dsh/profiles.json`.
+- Linux: `$XDG_CONFIG_HOME/containerize-dsh/profiles.json`, or
+  `~/.config/containerize-dsh/profiles.json` if unset. Relative XDG paths are ignored.
+
+The file is a JSON object keyed by profile name. For example, replacing the paths
+with your own absolute paths (Windows paths may use forward slashes):
+
+```json
+{
+  "my-project": {
+    "plugin": "/private/my-project/.dsh-plugin",
+    "repo": "/private/my-project",
+    "name": "my-project-sandbox",
+    "port": 11127,
+    "key_file": "/private-secrets/deepseek-key"
+  }
+}
+```
+
+All five fields are optional. `key_file` is a **path**, never an API key; omit it
+to use the existing environment/UI authentication. No other fields are accepted.
+Saved paths must be absolute or start with `~`; they do not depend on the current
+directory. Keep the registry outside this public repository and out of Git.
+
+```sh
+python dsh.py --profile my-project up
+python dsh.py --profile my-project init
+python dsh.py --profile my-project --name another-sandbox --port 11128 up
+python dsh.py --profile my-project status --repo /another/host-checkout
+```
+
+As with explicit options, run `build` and `init` before the first `up`; `init`
+requires an empty workspace. A saved `repo` supplies the default for `init`,
+`refresh`, `import`, and `status`; it never mounts the host checkout.
+Explicit CLI arguments override saved values, including values equal to the
+original defaults. Without `--profile`, the registry is not read and existing
+commands work as before. There is no default profile or current-directory plugin
+discovery: explicitly select `--profile` or `--plugin` on every invocation.
+Selecting a profile trusts its plugin just as passing `--plugin` does; existing
+plugin, key-file, and Compose isolation checks still apply. Unknown profiles or
+invalid selected entries fail before Docker runs. Edit the JSON file to add,
+rename, or remove profiles; the launcher never writes credentials or profiles.
+
 ## Work in a separate checkout
 
 The host and `/workspace` are different Git repositories, like two machines.

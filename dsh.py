@@ -225,19 +225,62 @@ def transfer(sandbox, args):
                     print('Host changes:', git(args.repo, 'status', '--short') or '(clean)')
 
 
-def main():
+def profiles_path():
+    if sys.platform == 'win32':
+        base = Path(os.environ.get('APPDATA') or Path.home() / 'AppData' / 'Roaming')
+    elif sys.platform == 'darwin':
+        base = Path.home() / 'Library' / 'Application Support'
+    else:
+        base = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config')
+        if not base.is_absolute():
+            base = Path.home() / '.config'
+    return base / 'containerize-dsh' / 'profiles.json'
+
+
+def load_profile(name):
+    path = profiles_path().resolve()
+    if path.is_relative_to(ROOT):
+        raise ValueError('Keep the profile registry outside the public repository.')
+    try:
+        profiles = json.loads(path.read_text(encoding='utf-8-sig'))
+    except (OSError, ValueError):
+        raise ValueError(f'Cannot read profile registry as JSON: {path}') from None
+    if not isinstance(profiles, dict):
+        raise ValueError('Profile registry must be an object keyed by profile name.')
+    if name not in profiles:
+        raise ValueError(f'Unknown profile: {name}')
+    profile = profiles[name]
+    if not isinstance(profile, dict) or set(profile) - {'plugin', 'repo', 'name', 'port', 'key_file'}:
+        raise ValueError('Profile allows only plugin, repo, name, port and key_file.')
+    profile = profile.copy()
+    for key, value in profile.items():
+        if key == 'port':
+            if type(value) is not int or not 1 <= value <= 65535:
+                raise ValueError('Profile port must be an integer from 1 to 65535.')
+        elif not isinstance(value, str) or not value.strip():
+            raise ValueError(f'Profile {key} must be a nonempty string.')
+        elif key in {'plugin', 'repo', 'key_file'}:
+            expanded = Path(value).expanduser()
+            if not expanded.is_absolute():
+                raise ValueError(f'Profile {key} must be an absolute path (or start with ~).')
+            profile[key] = str(expanded)
+    return profile
+
+
+def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--name', default='dsh-sandbox', help='Compose project / persistent volume namespace')
+    p.add_argument('--profile', help='Explicit user profile name from profiles.json')
+    p.add_argument('--name', help='Compose project / persistent volume namespace')
     p.add_argument('--plugin', help='Explicit plugin directory, including external paths')
     p.add_argument('--key-file', help='External file containing only the DeepSeek API key')
-    p.add_argument('--port', type=int, default=11111)
+    p.add_argument('--port', type=int)
     sub = p.add_subparsers(dest='action', required=True)
     for action in ['build', 'up', 'stop', 'restart', 'down', 'logs', 'url', 'shell', 'validate', 'config']:
         sub.add_parser(action)
     for action in ['init', 'refresh', 'export', 'import', 'status']:
         child = sub.add_parser(action)
         if action in ('init', 'refresh', 'import', 'status'):
-            child.add_argument('--repo', required=action != 'status')
+            child.add_argument('--repo')
         if action in ('init', 'refresh'):
             child.add_argument('--revision', default='HEAD')
         if action in ('init', 'refresh', 'export'):
@@ -247,11 +290,32 @@ def main():
             child.add_argument('--bundle', required=True)
         if action == 'import':
             child.add_argument('--branch')
-    args = p.parse_args()
+    args = p.parse_args(argv)
+    if args.profile is not None:
+        try:
+            profile = load_profile(args.profile)
+        except ValueError as error:
+            p.error(str(error))
+        for key, value in profile.items():
+            if hasattr(args, key) and getattr(args, key) is None:
+                setattr(args, key, value)
+    if args.name is None:
+        args.name = 'dsh-sandbox'
+    if args.port is None:
+        args.port = 11111
     if not re.fullmatch('[a-z0-9][a-z0-9_-]*', args.name):
         p.error('Invalid sandbox name')
+    if not 1 <= args.port <= 65535:
+        p.error('Port must be from 1 to 65535')
+    if args.action in ('init', 'refresh', 'import') and not args.repo:
+        p.error('--repo is required unless supplied by the selected profile')
     if getattr(args, 'include_untracked', False) and not args.snapshot:
         p.error('--include-untracked requires --snapshot')
+    return args
+
+
+def main():
+    args = parse_args()
     if args.action == 'import':
         transfer(None, args)
         return
