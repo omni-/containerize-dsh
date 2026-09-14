@@ -1,0 +1,6 @@
+**
+!Dockerfile
+!scripts/
+!scripts/start-dsh.sh
+!scripts/git_transfer.py
+!scripts/workspace.py

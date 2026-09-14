@@ -1,0 +1,7 @@
+.env
+.env.*
+!.env.example
+.local/
+*.bundle
+__pycache__/
+*.pyc

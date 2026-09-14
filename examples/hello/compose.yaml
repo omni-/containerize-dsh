@@ -1,0 +1,4 @@
+services:
+  dsh:
+    environment:
+      EXAMPLE_GREETING: Hello from the selected plugin

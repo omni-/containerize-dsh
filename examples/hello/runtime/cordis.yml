@@ -1,0 +1,11 @@
+- insert:
+    - id: mcp-hello
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: hello
+        transport: stdio
+        command: node
+        args:
+          - /opt/dsh-plugin/server.mjs
+        cwd: /workspace
+        failOnStartupError: true

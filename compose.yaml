@@ -1,0 +1,25 @@
+services:
+  dsh:
+    image: ${DSH_IMAGE:-dsh-sandbox:local}
+    init: true
+    user: "10001:10001"
+    working_dir: /workspace
+    ports:
+      - "127.0.0.1:${DSH_PORT:-11111}:3081"
+    volumes:
+      - workspace:/workspace
+      - home:/home/agent
+    environment:
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DSH_HOST_PORT: ${DSH_PORT:-11111}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:size=2g,exec,mode=1777,nosuid,nodev
+      - /var/tmp:size=1g,exec,mode=1777,nosuid,nodev
+    shm_size: 1gb
+    pids_limit: 2048
+volumes:
+  workspace:
+  home:

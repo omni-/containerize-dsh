@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "runtime": "runtime",
+  "compose": "compose.yaml",
+  "build": {"context": ".", "dockerfile": "Dockerfile"}
+}
