@@ -143,7 +143,10 @@ stay outside this repository; ignored `.local/` is only a guard against accident
 not the supported plugin location. No launcher command stages, commits on a host
 branch, or publishes anything.
 
-DSH is pinned to the extracted setup's `0.1.5-rc.1`. The Node base tag, apt packages
+The generic runtime uses Ubuntu 24.04, with Node 24 copied from the official Node
+image. This preserves the original runtime's glibc compatibility without including
+project SDKs or graphics libraries; those belong in external plugins.
+DSH is pinned to the extracted setup's `0.1.5-rc.1`. The Ubuntu and Node tags, apt packages
 and npm transitive dependencies can still change between builds; this is not a
 fully reproducible dependency lock. The install explicitly permits the native
 runtime dependencies' npm install scripts. Review upstream changes when upgrading.

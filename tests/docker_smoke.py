@@ -105,6 +105,9 @@ def main():
             else:
                 raise AssertionError('DSH web did not become ready')
             run(*cli, 'validate')
+            run('docker', 'exec', cid, 'sh', '-ec',
+                '. /etc/os-release; test "$ID" = ubuntu; test "$VERSION_ID" = 24.04; '
+                'if command -v dotnet || command -v Xvfb; then exit 1; fi')
             info = json.loads(run('docker', 'inspect', cid))[0]
             assert info['HostConfig']['ReadonlyRootfs']
             assert info['Config']['User'] == '10001:10001'
