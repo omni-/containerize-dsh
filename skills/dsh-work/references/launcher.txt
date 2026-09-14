@@ -1,0 +1,2 @@
+The installer replaces this file in the user-scoped installed copy with the
+absolute global launcher location. In a source checkout, run python dsh_task.py.

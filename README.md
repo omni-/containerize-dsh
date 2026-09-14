@@ -1,9 +1,16 @@
 # DSH sandbox
 
-A small Docker home for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness),
-with explicitly selected external project plugins and an isolated Git checkout.
-Requires Python 3.10+, Git, and Docker with Compose v2 on the host; Docker Desktop
-must use Linux containers on Windows. No Python dependencies are needed.
+A Docker sandbox for
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH), a coding
+agent. DSH gets broad permissions inside the container, while the host checkout,
+its `.git`, host credential stores, and Docker socket stay isolated from the agent.
+The agent can read credentials explicitly supplied to DSH and secrets included in
+transferred Git history.
+
+Work moves through an isolated checkout using Git bundles. External plugins can add
+project tooling and MCP configuration and are selected explicitly. The host requires
+Python 3.10+, Git, and Docker with Compose v2; Docker Desktop must use Linux
+containers on Windows. No Python dependencies are needed.
 
 ```text
 Dockerfile                 Generic DSH, Node, Git and helper image
@@ -30,7 +37,7 @@ python dsh.py url
 
 Open the localhost login URL printed by `url` (it includes DSH's browser token).
 Treat that URL as a credential. Enter provider credentials through DSH's UI, or set
-`DEEPSEEK_API_KEY` in the launching process. Alternatively supply
+`DEEPSEEK_API_KEY` in the launching process. Or pass
 `--key-file /outside/public-repo/deepseek-key` before the command. The file contains
 only the API key and is mounted read-only; it must be readable by UID 10001.
 Credentials entered in DSH persist in its private home volume. No key is required
@@ -55,8 +62,8 @@ home and workspace volumes. Do not run two sandboxes against the same volumes.
 
 ## Saved user profiles
 
-For frequently used plugins, create a `containerize-dsh/profiles.json` file in
-your user config directory (create its parent directory if needed):
+For frequently used plugins, create `containerize-dsh/profiles.json` in your user
+config directory. Create its parent directory if needed:
 
 - Windows: `%APPDATA%\containerize-dsh\profiles.json` (normally under `AppData\Roaming`).
 - macOS: `~/Library/Application Support/containerize-dsh/profiles.json`.
@@ -104,10 +111,10 @@ rename, or remove profiles; the launcher never writes credentials or profiles.
 
 ## Work in a separate checkout
 
-The host and `/workspace` are different Git repositories, like two machines.
-The agent can edit only its own checkout. It cannot operate on a host path.
-Transfers carry Git objects and selected refs, never the host `.git`, remotes,
-hooks, credential helpers, SSH keys, GitHub credentials, or Docker socket.
+The host and `/workspace` are separate Git repositories. The coding agent edits
+an isolated checkout; the host checkout is not mounted in the container.
+Transfers use Git bundles to carry Git objects and selected refs, never the host
+`.git`, remotes, hooks, credential helpers, SSH keys, GitHub credentials, or Docker socket.
 
 Stop the sandbox before any workspace command, including status. This prevents
 the agent racing a checkout or snapshot. Do not launch concurrent maintenance
@@ -162,8 +169,8 @@ commit the live workspace. Existing export files are never overwritten.
 
 `status` prints the original host commit, transferred base, current agent HEAD,
 base-vs-HEAD commit counts (base-only then agent-only), and dirty files. With `--repo`
-it also shows current host HEAD, whether it changed, and host dirty files. This makes
-divergence visible without assuming the repositories have matching paths or branches.
+it also shows current host HEAD, whether it changed, and host dirty files, so you can
+see divergence even when the repositories have different paths or branches.
 
 Bundles contain the selected commit history, including historical file contents;
 keep them private. They do not include ignored artifacts, LFS object payloads or
@@ -171,6 +178,91 @@ submodule repositories. Snapshot mode rejects submodules; revision mode carries
 gitlinks only. Supply those dependencies separately through your private plugin.
 Shallow repositories may yield prerequisite-dependent bundles that fail verification;
 use a complete source clone. Transfer a single repository at a time.
+
+## Day-to-day task workflow
+
+The task launcher records each sandbox and its transfers under a unique task ID.
+Run it from this directory (or use the absolute path to `dsh_task.py`),
+selecting a profile from the registry described above:
+
+```powershell
+python dsh_task.py start --profile my-project --task fix-parser --open
+# Optional: --repo <path> --target <branch> --revision <commit-or-ref>
+# Dirty baseline instead: --snapshot [--include-untracked]
+# Another simultaneous task: --port 11128
+# Rebuild core/plugin images explicitly: --rebuild
+```
+
+The profile's sandbox name is replaced with a fresh task namespace.
+Task profiles must use task-owned home/workspace volumes, not external/shared
+volume overrides. Existing images are reused; rebuild after changing image inputs.
+The launcher prints a unique task ID and browser URL. It never mounts the host
+checkout. Work with DeepSeek in that browser, then export the task for host-side review.
+
+Task manifests and immutable review bundles live next to the user profile
+registry under `tasks/<task-id>/`, outside the source repository. Records include
+repository identity, intended target, actual source HEAD, exact transferred base,
+resolved settings, Docker identities, review refs/reports and integration results.
+Treat this state as private. `python dsh_task.py show <id>` resolves it without conversation
+history. Interrupted/failed operations retain their records and resources.
+
+Use these host commands to export, record your review, prepare integration, and
+clean up after verification:
+
+```text
+python dsh_task.py export <id> [--include-untracked]
+python dsh_task.py reviewed <id> --revision <exported-oid> --report <review-report>
+python dsh_task.py prepare <id>
+python dsh_task.py finalize <id> --checks <checks-report>
+python dsh_task.py cleanup <id> [--require-integrated]
+python dsh_task.py resume <id>
+python dsh_task.py url <id>
+```
+
+Export pauses DeepSeek and leaves it stopped. New files require explicit inclusion.
+Each export creates a new recoverable review ref. Review compares the agent revision
+with the recorded transferred base, separating existing dirty baseline changes.
+Integration applies only that delta in a separate worktree. Baseline dependencies
+or conflicts block preparation; a dirty/moved target blocks finalization. The
+prepared branch remains available, and integration is not reported complete.
+Reports record human/host-agent verification, not an automatic guarantee of quality.
+
+Cleanup is explicit and refuses changed or unpreserved work, ignored files, and
+incomplete requested integration. It removes the exact task container/workspace
+volume and clean recorded integration worktrees, preserving home/session history,
+recovery bundles/refs/reports, images, caches, plugins and networks. Review alone
+never fixes code, changes the target, or deletes the task. Do not operate on the
+same task concurrently through lower-level Docker or launcher commands. A leftover
+`lock` after process termination should be removed only after confirming no task
+operation is still active.
+
+## Optional bonus: Codex task helper
+
+The bundled [`dsh-work` Codex skill](skills/dsh-work/SKILL.md) is an **optional bonus**
+for reviewing, integrating, and cleaning up completed DSH tasks from the host side.
+Codex is not required. The skill uses the same task manifests and Git transfer
+commands described above; you can also use the CLI and manual workflow directly.
+
+To install or update it, run from this repository:
+
+```sh
+python scripts/install_workflow.py
+```
+
+This copies the repository's canonical skill source into your user-level Codex
+skills directory (`$CODEX_HOME/skills`, or `~/.codex/skills`) and installs the
+`dsh-task` command wrapper. On Windows the installer adds the wrapper to your user
+PATH; reopen your terminal afterward. On Linux/macOS ensure `~/.local/bin` is on
+PATH. Restart Codex to discover the skill. Keep this checkout and Python interpreter
+in place, or rerun the installer after moving them. Make skill edits in the repo
+and rerun the installer to refresh the managed copy, including removing stale files.
+
+In host Codex, invoke it explicitly:
+
+```text
+$dsh-work review <task-id>
+$dsh-work integrate <task-id> and clean up
+```
 
 ## Isolation and lifecycle
 
@@ -181,15 +273,15 @@ package downloads. DSH's full-access permission mode operates inside this bounda
 The agent can read its own provider key and mounted plugin runtime files.
 
 `shell`, `logs`, `validate`, `stop`, `restart`, and `down` are host helpers.
-`down` removes containers/network but preserves volumes. There is deliberately no
+`down` removes containers/network but preserves volumes. `dsh.py` has no
 volume-delete or workspace-reset command. Back up home separately if you need to
 preserve DSH sessions/settings; Git bundles cover only repository contents.
 
-The launcher neither installs plugins into this repository nor scans project code.
+The launcher does not install plugins into this repository or scan project code.
 Its generated Compose files and transfers use OS temporary directories. The core
 Docker build uses an allowlist `.dockerignore`. Private plugins and secret files must
 stay outside this repository; ignored `.local/` is only a guard against accidents,
-not the supported plugin location. No launcher command stages, commits on a host
+not the supported plugin location. No `dsh.py` command stages, commits on a host
 branch, or publishes anything.
 
 The generic runtime uses Ubuntu 24.04, with Node 24 copied from the official Node
@@ -205,9 +297,13 @@ runtime dependencies' npm install scripts. Review upstream changes when upgradin
 ```sh
 python -m unittest discover -s tests -v
 python tests/docker_smoke.py
+python tests/task_docker_smoke.py
 ```
 
 The second command builds local images and uses port 11112, an external copy of the
 example plugin, temporary synthetic repositories and fresh uniquely named volumes.
 It removes its own containers and volumes afterward. It does not use a real API
 key or make a model request. See the [plugin contract](docs/plugins.md).
+The third command requires the cached core image, starts a synthetic task with no
+provider key, exercises the task lifecycle, and removes only its disposable fixture
+resources. It does not build images or make model calls.
