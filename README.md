@@ -236,6 +236,20 @@ same task concurrently through lower-level Docker or launcher commands. A leftov
 `lock` after process termination should be removed only after confirming no task
 operation is still active.
 
+For a genuinely disposable session, explicitly discard its container work instead:
+
+```text
+dsh-task discard <task-id>
+# Without the installed wrapper: python dsh_task.py discard <task-id>
+```
+
+This permanently removes the task container and workspace, including uncommitted,
+untracked and ignored files, without requiring export, review or integration.
+The command asks for `[y/n]` confirmation before changing resources. Only `y`
+(case-insensitive) proceeds; empty input, any other answer, or interrupted input cancels.
+Ownership checks still apply. DSH home/session history, task records, existing
+exports, host worktrees and shared resources remain. Repeating discard is safe.
+
 ## Optional bonus: Codex task helper
 
 The bundled [`dsh-work` Codex skill](skills/dsh-work/SKILL.md) is an **optional bonus**
@@ -307,3 +321,5 @@ key or make a model request. See the [plugin contract](docs/plugins.md).
 The third command requires the cached core image, starts a synthetic task with no
 provider key, exercises the task lifecycle, and removes only its disposable fixture
 resources. It does not build images or make model calls.
+Run `python tests/task_docker_smoke.py --discard` to exercise disposable-session
+discard, including dirty/ignored files and preservation of DSH home history.

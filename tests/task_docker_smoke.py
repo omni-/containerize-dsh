@@ -54,6 +54,24 @@ def main():
                 cid = task['container']
                 tasks.dsh.run('docker', 'exec', cid, 'sh', '-ec',
                     'printf "agent change\\n" > /workspace/file; printf "new agent file\\n" > /workspace/new')
+                if '--discard' in sys.argv:
+                    tasks.dsh.run('docker', 'exec', cid, 'sh', '-ec',
+                        'printf disposable > /workspace/ignored; printf retained > /home/agent/discard-history')
+                    with patch('builtins.input', return_value='y'):
+                        tasks.main(['discard', task['id']])
+                        tasks.main(['discard', task['id']])
+                    saved = json.loads(records[0].read_text())
+                    assert saved['discarded'] and not saved['reviews']
+                    volumes = tasks.docker_list('volume', 'ls', '--format', '{{.Name}}')
+                    assert task['volumes']['workspace'] not in volumes
+                    assert task['volumes']['home'] in volumes
+                    assert (repo / '.git/index').read_bytes() == index
+                    assert (repo / 'baseline').read_text() == 'user-owned baseline\n'
+                    assert tasks.dsh.run('docker', 'run', '--rm', '--entrypoint', 'cat',
+                        '--mount', 'type=volume,src=' + task['volumes']['home'] + ',dst=/retained,readonly',
+                        'dsh-sandbox:local', '/retained/discard-history', capture=True) == 'retained'
+                    print('PASS: discard running disposable task with dirty/new/ignored files, no review, repeat-safe, host and home preserved.')
+                    return
                 with tasks.sandbox(task) as box:
                     try:
                         tasks.export_task(directory, task, box)

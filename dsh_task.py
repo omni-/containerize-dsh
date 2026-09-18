@@ -277,6 +277,38 @@ def cleanup(directory, task, box, require_integrated=False):
     save(directory, task)
 
 
+def discard(directory, task):
+    """Explicitly abandon container work; keep host worktrees, home and records."""
+    if task.get('cleaned'):
+        return True
+    owned(task, allow_missing=task.get('discard_started', False))
+    try:
+        answer = input(f'Permanently discard task {task["id"]} and ALL workspace files '
+                       '(including uncommitted, untracked and ignored files)? [y/n] ').strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = ''
+    if answer != 'y':
+        print('Discard cancelled; no resources changed.')
+        return False
+    task['discard_started'] = True
+    save(directory, task)
+    cid = task.get('container')
+    if cid and cid in docker_list('ps', '-aq', '--no-trunc'):
+        dsh.run('docker', 'stop', cid)
+        # Recheck ownership after stopping, before removing anything.
+        owned(task, allow_missing=True)
+        dsh.run('docker', 'rm', cid)
+    task['container'] = None
+    save(directory, task)
+    owned(task, allow_missing=True)
+    workspace = task['volumes']['workspace']
+    if workspace in docker_list('volume', 'ls', '--format', '{{.Name}}'):
+        dsh.run('docker', 'volume', 'rm', workspace)
+    task.update(discarded=True, cleaned=True)
+    save(directory, task)
+    return True
+
+
 def show_url(box, port, open_browser=False):
     for _ in range(30):
         logs = box.compose('logs', '--no-color', '--tail', '200', 'dsh', capture=True)
@@ -349,6 +381,12 @@ def main(argv=None):
     child.add_argument('--include-untracked', action='store_true')
     child.add_argument('--rebuild', action='store_true')
     child.add_argument('--open', action='store_true')
+    child = sub.add_parser('discard', help='Delete disposable container work without export or review',
+        description='Permanently delete this task container and workspace, including uncommitted, '
+                    'untracked and ignored files, without export/review/integration. '
+                    'Preserve DSH home/history, task records, existing bundles and host worktrees. '
+                    'Requires an explicit y at the [y/n] confirmation prompt; otherwise cancels.')
+    child.add_argument('task_id', help='Exact task ID to discard after confirmation')
     for action in ('show', 'export', 'reviewed', 'prepare', 'finalize', 'cleanup', 'resume', 'url'):
         child = sub.add_parser(action)
         child.add_argument('task_id')
@@ -370,8 +408,13 @@ def main(argv=None):
         start(args)
         return
     with locked(args.task_id) as (directory, task):
+        if task.get('discard_started') and args.action not in ('show', 'discard', 'cleanup'):
+            raise ValueError('Discard has started; container work is no longer available. Retry discard to finish.')
         if args.action == 'show':
             print(json.dumps(task, indent=2))
+        elif args.action == 'discard':
+            if discard(directory, task):
+                print('Task workspace removed; DSH home/history, task record, existing exports and host worktrees retained.')
         elif args.action == 'reviewed':
             review = latest(task)
             if review['revision'] != args.revision:
@@ -383,8 +426,10 @@ def main(argv=None):
         elif args.action == 'finalize':
             finalize(directory, task, args.checks)
         elif args.action == 'cleanup' and task.get('cleaned'):
-            print('Already cleaned; recovery record and home retained.')
+            print('Already cleaned; task record and home retained.')
         else:
+            if task.get('discard_started'):
+                raise ValueError('Discard is incomplete; retry discard to finish.')
             if task.get('cleaned'):
                 raise ValueError('Task workspace was cleaned; recovery bundle and home remain')
             with sandbox(task) as box:

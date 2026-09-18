@@ -95,3 +95,16 @@ ignored files, export/review again so the cleanup audit matches. Inspect and
 normally remove any optional review worktree you created, without `--force`.
 Never prune Docker broadly or delete volumes by wildcard. If cleanup refuses,
 retain recovery resources and explain the specific blocker.
+
+## Discard a disposable session
+
+When the user explicitly asks to discard a task's container work, run
+`dsh-task discard <id>` on the host in a terminal where the user can answer its
+`[y/n]` confirmation. Let the user supply `y`; do not auto-answer or pipe approval
+into the command. If interactive input is unavailable, give the user the command
+to run in their terminal. Discard permanently loses all files in the workspace,
+including uncommitted, untracked and ignored files; no export, review or integration
+is required. Empty input, anything other than `y`, EOF, or interruption cancels.
+Never substitute discard for ordinary cleanup or use it merely to bypass a
+cleanup failure. Ownership checks still apply. The command retains DSH home and
+session history, task records, existing exports, and all host worktrees/branches.
