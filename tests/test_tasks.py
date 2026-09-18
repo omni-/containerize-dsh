@@ -66,6 +66,46 @@ class TaskTests(unittest.TestCase):
         path.write_text('Synthetic fixture verified')
         return path
 
+    def test_start_optional_profile_resolution(self):
+        subdir = self.repo / 'subdirectory'
+        subdir.mkdir()
+        cases = [
+            ([], subdir, None, 11111),
+            (['--repo', str(self.repo), '--port', '12346'], self.root, None, 12346),
+            (['--profile', 'saved'], self.root, 'saved', 12345),
+            (['--profile', 'saved', '--repo', str(self.repo), '--port', '12346'],
+             self.root, 'saved', 12346),
+        ]
+        for argv, cwd, selected, port in cases:
+            with self.subTest(argv=argv):
+                box = Mock()
+                box.env = {'DSH_IMAGE': 'dsh-sandbox:local'}
+                box.compose.return_value = 'container-id'
+                with patch.object(taskmod, 'state_root', return_value=self.root / 'tasks'), \
+                        patch.object(Path, 'cwd', return_value=cwd), \
+                        patch.object(taskmod.dsh, 'load_profile', return_value={
+                            'repo': str(self.repo) if not '--repo' in argv else str(self.root / 'unused'),
+                            'port': 12345}) as load, \
+                        patch.object(taskmod, 'sandbox') as sandbox, \
+                        patch.object(taskmod, 'docker_list', return_value=[]), \
+                        patch.object(taskmod, 'audit', return_value={'base': self.head, 'host': self.head}), \
+                        patch.object(taskmod.dsh, 'transfer') as transfer, \
+                        patch.object(taskmod.dsh, 'run', return_value='[{"CreatedAt":"now","Id":"container-id"}]'), \
+                        patch.object(taskmod, 'show_url'):
+                    sandbox.return_value.__enter__.return_value = box
+                    taskmod.main(['start', '--task', 'fixture', *argv])
+                    task = sandbox.call_args.args[0]
+                    self.assertEqual(task['repo'], str(self.repo.resolve()))
+                    self.assertEqual(task['profile'], selected)
+                    self.assertEqual(task['resolved']['port'], port)
+                    self.assertIsNone(task['resolved']['plugin'])
+                    self.assertIsNone(task['resolved']['key_file'])
+                    self.assertEqual(transfer.call_args.args[1].repo, str(self.repo.resolve()))
+                    if selected:
+                        load.assert_called_once_with(selected)
+                    else:
+                        load.assert_not_called()
+
     def test_clean_integration_after_host_advancement(self):
         review = self.review()
         (self.repo / 'host-new').write_text('host advancement')

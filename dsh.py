@@ -146,8 +146,8 @@ class Sandbox:
                 self.path(build.get('context', '.')))
 
     @contextmanager
-    def maintenance(self):
-        if self.compose('ps', '--status', 'running', '-q', capture=True):
+    def maintenance(self, *, allow_running=False):
+        if not allow_running and self.compose('ps', '--status', 'running', '-q', capture=True):
             raise ValueError('Stop the sandbox before workspace operations: dsh.py ... stop')
         name = 'dsh-transfer-' + uuid.uuid4().hex
         try:
@@ -196,7 +196,8 @@ def transfer(sandbox, args):
             make_bundle(repo, bundle, dict(base=base, host=head))
         if args.action == 'export' and Path(args.bundle).exists():
             raise ValueError('Export destination already exists.')
-        with sandbox.maintenance() as container:
+        with sandbox.maintenance(allow_running=args.action == 'export' and
+                                 getattr(args, 'force', False)) as container:
             command = ['docker', 'exec', container, 'python3', '/opt/dsh/workspace.py', args.action]
             if args.action in ('init', 'refresh'):
                 with bundle.open('rb') as stream:
@@ -288,6 +289,9 @@ def parse_args(argv=None):
             child.add_argument('--include-untracked', action='store_true')
         if action in ('export', 'import'):
             child.add_argument('--bundle', required=True)
+        if action == 'export':
+            child.add_argument('--force', action='store_true',
+                               help='Export while the sandbox is running; concurrent edits may produce an inconsistent snapshot')
         if action == 'import':
             child.add_argument('--branch')
     args = p.parse_args(argv)

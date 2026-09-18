@@ -116,8 +116,8 @@ an isolated checkout; the host checkout is not mounted in the container.
 Transfers use Git bundles to carry Git objects and selected refs, never the host
 `.git`, remotes, hooks, credential helpers, SSH keys, GitHub credentials, or Docker socket.
 
-Stop the sandbox before any workspace command, including status. This prevents
-the agent racing a checkout or snapshot. Do not launch concurrent maintenance
+Stop the sandbox before any workspace command, including status, unless using
+`export --force`. Stopping prevents the agent racing a checkout or snapshot. Do not launch concurrent maintenance
 commands or start the service from another terminal while one is running.
 
 ```sh
@@ -153,8 +153,14 @@ python dsh.py stop
 python dsh.py export --bundle /private/transfers/work.bundle
 # If the agent has not committed its edits:
 python dsh.py export --snapshot --include-untracked --bundle /private/transfers/dirty-work.bundle
+# Or export without stopping the running sandbox:
+python dsh.py export --force --snapshot --include-untracked --bundle /private/transfers/live-work.bundle
 python dsh.py import --repo /path/to/host-repository --bundle /private/transfers/work.bundle --branch dsh/review-feature
 ```
+
+`export --force` bypasses only the running-sandbox check; it does not stop or restart
+the sandbox or overwrite an existing bundle. Concurrent edits can make a live
+snapshot inconsistent or cause export to fail.
 
 Import creates a new local review branch and prints the source host commit and DSH
 base. Before fetching, it requires the recorded host commit to already exist in the
@@ -182,16 +188,22 @@ use a complete source clone. Transfer a single repository at a time.
 ## Day-to-day task workflow
 
 The task launcher records each sandbox and its transfers under a unique task ID.
-Run it from this directory (or use the absolute path to `dsh_task.py`),
-selecting a profile from the registry described above:
+From the repository you want to work on, use the installed command:
 
 ```powershell
-python dsh_task.py start --profile my-project --task fix-parser --open
+dsh-task start --task fix-parser --open
+# Optional saved settings: --profile my-project
 # Optional: --repo <path> --target <branch> --revision <commit-or-ref>
 # Dirty baseline instead: --snapshot [--include-untracked]
 # Another simultaneous task: --port 11128
 # Rebuild core/plugin images explicitly: --rebuild
 ```
+
+Without `--profile`, the launcher uses the current repository (or `--repo`), no
+plugin, port 11111, and `DEEPSEEK_API_KEY` from the environment. You can also enter
+credentials in the DSH browser UI. It does not load saved profile settings unless
+you explicitly select one. Without the installed command, invoke
+`python /path/to/containerize-dsh/dsh_task.py start --task fix-parser --open`.
 
 The profile's sandbox name is replaced with a fresh task namespace.
 Task profiles must use task-owned home/workspace volumes, not external/shared
@@ -205,6 +217,24 @@ repository identity, intended target, actual source HEAD, exact transferred base
 resolved settings, Docker identities, review refs/reports and integration results.
 Treat this state as private. `python dsh_task.py show <id>` resolves it without conversation
 history. Interrupted/failed operations retain their records and resources.
+
+To export only a bundle without creating a review, use:
+
+```powershell
+dsh-task export <task-id> --force --snapshot --include-untracked --bundle work.bundle
+dsh-task import --bundle work.bundle
+```
+
+The task ID may be omitted when exactly one active task belongs to the current
+Git repository (including its linked worktrees). `--force` keeps the sandbox
+running; concurrent edits may produce an inconsistent snapshot. Without
+`--snapshot`, only committed work is exported. Existing bundle files are never
+overwritten. Omitting `--bundle` retains the normal review export workflow.
+
+`dsh-task import` defaults to the current directory; use `--repo <path>` for another
+repository. It creates a new local branch and prints its name without requiring a
+review, switching branches, or merging. Optionally choose its name with
+`--branch dsh/review-feature`. Import does not require a task ID or Docker.
 
 Use these host commands to export, record your review, prepare integration, and
 clean up after verification:

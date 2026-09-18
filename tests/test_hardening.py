@@ -1,5 +1,5 @@
 import copy
-from contextlib import redirect_stdout
+from contextlib import chdir, redirect_stdout
 import io
 from pathlib import Path
 import subprocess
@@ -12,6 +12,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import dsh
+import dsh_task
 from git_transfer import git, make_bundle
 
 
@@ -66,6 +67,25 @@ class ImportBoundaryTests(unittest.TestCase):
         for oid in (self.host, self.work):
             with self.assertRaises(RuntimeError):
                 git(repo, 'cat-file', '-t', oid)
+
+    def test_task_import_defaults_to_current_directory_without_task_or_docker(self):
+        with chdir(self.destination), redirect_stdout(io.StringIO()), \
+                patch.object(dsh_task, 'locked') as locked, \
+                patch.object(dsh, 'Sandbox') as sandbox:
+            dsh_task.main(['import', '--bundle', str(self.bundle)])
+        locked.assert_not_called()
+        sandbox.assert_not_called()
+        branches = git(self.destination, 'for-each-ref', '--format=%(objectname)',
+                       'refs/heads/dsh/review-*')
+        self.assertEqual(branches, self.work)
+        self.assertEqual(git(self.destination, 'rev-parse', 'HEAD'), self.host)
+
+    def test_task_import_accepts_explicit_repository_and_branch(self):
+        with redirect_stdout(io.StringIO()):
+            dsh_task.main(['import', '--bundle', str(self.bundle), '--repo', str(self.destination),
+                           '--branch', 'dsh/review-chosen'])
+        self.assertEqual(git(self.destination, 'rev-parse', 'dsh/review-chosen'), self.work)
+        self.assertEqual(git(self.destination, 'rev-parse', 'HEAD'), self.host)
 
     def test_advanced_dirty_linked_worktree_accepts_original_host(self):
         (self.destination / 'file').write_text('host advanced')

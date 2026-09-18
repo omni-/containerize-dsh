@@ -324,7 +324,7 @@ def show_url(box, port, open_browser=False):
 
 
 def start(args):
-    profile = dsh.load_profile(args.profile)
+    profile = dsh.load_profile(args.profile) if args.profile is not None else {}
     repo = Path(git(args.repo or profile.get('repo') or Path.cwd(), 'rev-parse', '--show-toplevel')).resolve()
     task_id = re.sub('[^a-z0-9]+', '-', args.task.lower()).strip('-')[:40] or 'task'
     task_id += '-' + uuid.uuid4().hex
@@ -367,11 +367,25 @@ def start(args):
         show_url(box, resolved['port'], args.open)
 
 
+def task_for_repository():
+    repository = Path(identity(Path.cwd())).resolve()
+    matches = []
+    for manifest in state_root().glob('*/manifest.json'):
+        task = json.loads(manifest.read_text(encoding='utf-8'))
+        if (not task.get('cleaned') and not task.get('discard_started')
+                and Path(task['repository']).resolve() == repository):
+            matches.append(task['id'])
+    if len(matches) != 1:
+        raise ValueError('Specify a task ID; expected one active task for this repository. Matches: '
+                         + (', '.join(sorted(matches)) or '(none)'))
+    return matches[0]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
     child = sub.add_parser('start')
-    child.add_argument('--profile', required=True)
+    child.add_argument('--profile', help='Optional saved profile; otherwise use the current repository with no plugin')
     child.add_argument('--task', required=True)
     child.add_argument('--repo')
     child.add_argument('--target')
@@ -387,11 +401,18 @@ def main(argv=None):
                     'Preserve DSH home/history, task records, existing bundles and host worktrees. '
                     'Requires an explicit y at the [y/n] confirmation prompt; otherwise cancels.')
     child.add_argument('task_id', help='Exact task ID to discard after confirmation')
+    child = sub.add_parser('import', help='Import a bundle into a local branch without requiring a review')
+    child.add_argument('--bundle', required=True)
+    child.add_argument('--repo', default='.', help='Destination repository (default: current directory)')
+    child.add_argument('--branch', help='New branch name starting with dsh/review- (default: generated)')
     for action in ('show', 'export', 'reviewed', 'prepare', 'finalize', 'cleanup', 'resume', 'url'):
         child = sub.add_parser(action)
-        child.add_argument('task_id')
+        child.add_argument('task_id', nargs='?' if action == 'export' else None)
         if action == 'export':
             child.add_argument('--include-untracked', action='store_true')
+            child.add_argument('--bundle', help='Export directly to this file without importing or recording a review')
+            child.add_argument('--snapshot', action='store_true', help='Include working-tree edits in a direct bundle export')
+            child.add_argument('--force', action='store_true', help='Allow direct bundle export while the sandbox is running')
         if action == 'reviewed':
             child.add_argument('--revision', required=True)
             child.add_argument('--report', required=True)
@@ -400,6 +421,16 @@ def main(argv=None):
         if action == 'cleanup':
             child.add_argument('--require-integrated', action='store_true')
     args = parser.parse_args(argv)
+    if args.action == 'import':
+        dsh.transfer(None, args)
+        return
+    if args.action == 'export':
+        if not args.bundle and (args.force or args.snapshot):
+            parser.error('--force and --snapshot require --bundle')
+        if args.bundle and args.include_untracked and not args.snapshot:
+            parser.error('--include-untracked requires --snapshot with --bundle')
+        if not args.task_id:
+            args.task_id = task_for_repository()
     if args.action == 'start':
         if args.include_untracked and not args.snapshot:
             parser.error('--include-untracked requires --snapshot')
@@ -434,7 +465,14 @@ def main(argv=None):
                 raise ValueError('Task workspace was cleaned; recovery bundle and home remain')
             with sandbox(task) as box:
                 if args.action == 'export':
-                    print(json.dumps(export_task(directory, task, box, args.include_untracked), indent=2))
+                    if args.bundle:
+                        owned(task)
+                        dsh.transfer(box, args_for(task, 'export', bundle=args.bundle,
+                                     snapshot=args.snapshot, include_untracked=args.include_untracked,
+                                     force=args.force))
+                        print('Bundle:', Path(args.bundle).resolve())
+                    else:
+                        print(json.dumps(export_task(directory, task, box, args.include_untracked), indent=2))
                 elif args.action == 'cleanup':
                     cleanup(directory, task, box, args.require_integrated)
                 else:
