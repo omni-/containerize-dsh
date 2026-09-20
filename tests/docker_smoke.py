@@ -107,7 +107,18 @@ def main():
             run(*cli, 'validate')
             run('docker', 'exec', cid, 'sh', '-ec',
                 '. /etc/os-release; test "$ID" = ubuntu; test "$VERSION_ID" = 24.04; '
+                'command -v curl; command -v wget; '
                 'if command -v dotnet || command -v Xvfb; then exit 1; fi')
+            run('docker', 'exec', cid, 'node', '--input-type=module', '-e', '''
+                import assert from 'node:assert/strict';
+                import Picker from '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-host-directory-picker-browse/lib/index.js';
+                const picker = { config: { maxEntries: 1000 } };
+                const initial = await Picker.prototype.list.call(picker);
+                assert.equal(initial.path, '/workspace');
+                assert.equal(initial.home, '/home/agent');
+                const explicit = await Picker.prototype.list.call(picker, '/tmp');
+                assert.equal(explicit.path, '/tmp');
+            ''')
             info = json.loads(run('docker', 'inspect', cid))[0]
             assert info['HostConfig']['ReadonlyRootfs']
             assert info['Config']['User'] == '10001:10001'

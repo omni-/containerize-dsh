@@ -4,12 +4,14 @@ FROM ubuntu:24.04
 COPY --from=node /usr/local/ /usr/local/
 ARG DSH_VERSION=0.1.5-rc.1
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      bash ca-certificates git python3 ripgrep socat libstdc++6 libatomic1 \
+      bash ca-certificates curl wget git python3 ripgrep socat libstdc++6 libatomic1 \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g --omit=dev --no-audit --no-fund \
        --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty,@google/genai,protobufjs \
        "@deepseek-ai/dsh@${DSH_VERSION}" \
     && dsh --version
+COPY scripts/patch-dsh.py /opt/dsh/patch-dsh.py
+RUN python3 /opt/dsh/patch-dsh.py
 RUN useradd --create-home --uid 10001 --shell /bin/bash agent \
     && mkdir -p /workspace /opt/dsh \
     && chown agent:agent /workspace

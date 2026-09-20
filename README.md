@@ -47,6 +47,15 @@ Without a profile, the defaults are the current repository, no plugin, and port
 Use `--port 11128` for another simultaneous task. Startup builds missing images;
 pass `--rebuild` after changing image inputs to replace a cached image.
 
+The base image includes curl and wget alongside Node.js, Python, and Git.
+Project SDKs such as .NET belong in a [project plugin](docs/plugins.md), selected
+through a [saved profile](docs/profiles.md). Install them at image build time;
+the running agent cannot use apt against the read-only root filesystem.
+New sessions and the browser's initial directory default to `/workspace`; home
+remains `/home/agent` for credentials, history, and caches. The pinned DSH release
+needs a small build-time directory-browser patch for this default; image builds
+fail if an upstream change makes that patch incompatible.
+
 To send your current edits instead of committed `HEAD`, add `--snapshot`.
 Add `--include-untracked` only after checking which new files you want to share:
 
