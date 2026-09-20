@@ -381,9 +381,43 @@ def task_for_repository():
     return matches[0]
 
 
+def list_tasks():
+    rows = []
+    for manifest in sorted(state_root().glob('*/manifest.json')):
+        try:
+            task = json.loads(manifest.read_text(encoding='utf-8'))
+            if task['id'] != manifest.parent.name:
+                raise ValueError('Task identity mismatch')
+            if task.get('discarded'):
+                state = 'discarded'
+            elif task.get('cleaned'):
+                state = 'cleaned'
+            elif task.get('discard_started'):
+                state = 'discard-incomplete'
+            elif task.get('container'):
+                state = 'active'
+            else:
+                state = 'incomplete'
+            row = [task['id'], state, task['repo'], task['target'],
+                   task.get('profile') or '-', str(task['resolved']['port'])]
+            if not all(isinstance(value, str) for value in row):
+                raise ValueError('Invalid task summary fields')
+            rows.append(row)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            print(f'Warning: skipping {manifest}: {error}', file=sys.stderr)
+    if not rows:
+        print('No tasks found.')
+        return
+    rows.insert(0, ['TASK ID', 'STATE', 'REPOSITORY', 'TARGET', 'PROFILE', 'PORT'])
+    widths = [max(len(row[column]) for row in rows) for column in range(len(rows[0]))]
+    for row in rows:
+        print('  '.join(value.ljust(width) for value, width in zip(row, widths)).rstrip())
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
+    sub.add_parser('list', help='List all recorded tasks without contacting Docker')
     child = sub.add_parser('start')
     child.add_argument('--profile', help='Optional saved profile; otherwise use the current repository with no plugin')
     child.add_argument('--task', required=True)
@@ -421,6 +455,9 @@ def main(argv=None):
         if action == 'cleanup':
             child.add_argument('--require-integrated', action='store_true')
     args = parser.parse_args(argv)
+    if args.action == 'list':
+        list_tasks()
+        return
     if args.action == 'import':
         dsh.transfer(None, args)
         return

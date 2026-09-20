@@ -218,6 +218,14 @@ resolved settings, Docker identities, review refs/reports and integration result
 Treat this state as private. `python dsh_task.py show <id>` resolves it without conversation
 history. Interrupted/failed operations retain their records and resources.
 
+Run `dsh-task list` (or `python dsh_task.py list`) from any directory to list all
+recorded tasks, including cleaned and discarded tasks, sorted by task ID. The
+table shows each full task ID, recorded state, repository, target branch, profile,
+and port. It reads local manifests without contacting Git or Docker. `active`
+means a container was recorded, not that it is currently running; `incomplete`
+means startup did not record a container. Unreadable or malformed records are
+skipped with a warning.
+
 To export only a bundle without creating a review, use:
 
 ```powershell
