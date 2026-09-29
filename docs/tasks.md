@@ -160,23 +160,34 @@ After a terminated process, remove a leftover lock only once you've confirmed no
 task operation is still running. Inspect `show` and the saved records before
 deciding how to recover an incomplete startup; starting again creates another task.
 
-## Optional Codex helper
+## Optional Codex and Claude Code helpers
 
-The [bundled `dsh-work` skill](../skills/dsh-work/SKILL.md) lets host Codex review,
-integrate, and clean up completed tasks using the same CLI and records. Invoke it
-explicitly:
+The [bundled `dsh-work` skill](../skills/dsh-work/SKILL.md) lets Codex or Claude Code
+on the host review, integrate, and clean up completed tasks using the same CLI and
+records. Both versions require explicit invocation. In Codex:
 
 ```text
 $dsh-work review <task-id>
 $dsh-work integrate <task-id> and clean up
 ```
 
+In Claude Code:
+
+```text
+/dsh-work review <task-id>
+/dsh-work integrate <task-id> and clean up
+```
+
 Run `python scripts/install_workflow.py` from this checkout to install or update
-both the skill and command wrapper. The skill goes into `$CODEX_HOME/skills`, or
-`~/.codex/skills`; restart Codex to discover it. The wrapper goes into
+both skill versions and the command wrapper. The Codex version goes into
+`$CODEX_HOME/skills/dsh-work`, or `~/.codex/skills/dsh-work`. The Claude Code version
+goes into `$CLAUDE_CONFIG_DIR/skills/dsh-work`, or `~/.claude/skills/dsh-work`, with
+`disable-model-invocation: true` in its frontmatter. Restart your app to discover
+the skill. The wrapper goes into
 `%LOCALAPPDATA%\containerize-dsh\bin` on Windows or `~/.local/bin` on Linux/macOS.
 Windows installation updates user PATH.
 
-Edit the canonical skill in this repository and rerun the installer. Updates
-replace the managed copy, including removing stale files and local edits there.
-The installer refuses to overwrite an unrelated wrapper or unmanaged skill.
+Edit the shared canonical skill in this repository and rerun the installer.
+Updates replace both managed copies, including removing stale files and local
+edits there. The installer checks both skill destinations before writing and
+refuses to overwrite an unrelated wrapper or either unmanaged skill.

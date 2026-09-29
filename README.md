@@ -22,9 +22,10 @@ python scripts/install_workflow.py
 ```
 
 On Windows, reopen your terminal to pick up the updated user PATH. On Linux/macOS,
-put `~/.local/bin` on PATH. The installer also adds the optional `dsh-work` Codex
-skill; Codex isn't required to use the sandbox. Keep this checkout and Python
-interpreter in place, or rerun the installer after moving them.
+put `~/.local/bin` on PATH. The installer also adds the optional `dsh-work` skill
+for Codex and Claude Code; neither app is required to use the sandbox. Invoke it
+as `$dsh-work` in Codex or `/dsh-work` in Claude Code. Keep this checkout and
+Python interpreter in place, or rerun the installer after moving them.
 
 Then, from the repository you want DeepSeek to work on:
 
@@ -152,7 +153,7 @@ in its home volume.
 
 - [Profiles](docs/profiles.md): saved paths, ports, plugins, and key files.
 - [Transfers](docs/transfers.md): snapshots, direct bundle export, imports, and manual review.
-- [Task lifecycle](docs/tasks.md): command options, records, recovery, cleanup, and the Codex helper.
+- [Task lifecycle](docs/tasks.md): command options, records, recovery, cleanup, and the Codex/Claude Code helpers.
 - [Isolation details](docs/isolation.md): mounts, authentication, build inputs, and trust boundaries.
 - [Low-level launcher](docs/launcher.md): `dsh.py` commands for managing a sandbox directly.
 - [Plugin contract](docs/plugins.md): project tooling, runtime hooks, and the hello example.

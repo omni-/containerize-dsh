@@ -1,11 +1,12 @@
 ---
 name: dsh-work
-description: Review, integrate, and explicitly clean up containerize-dsh tasks from host Codex when invoked as $dsh-work.
+description: Review, integrate, and explicitly clean up containerize-dsh tasks on the host when explicitly invoked.
 ---
 
 Maintain this skill in `skills/dsh-work/` in the `containerize-dsh` repository.
-The user-level installation is a generated copy: edit the canonical source and
-rerun `python scripts/install_workflow.py` from that repository to install/update.
+The user-level Codex and Claude Code installations are generated copies: edit the
+canonical source and rerun `python scripts/install_workflow.py` from that
+repository to install/update both versions.
 The installed `.containerize-dsh-install` file identifies the source checkout.
 Keep project-specific instructions and credentials out of this skill.
 

@@ -1,4 +1,4 @@
-"""Install this checkout's thin launcher and explicit-only skill at user scope."""
+"""Install the launcher and explicit-only Codex and Claude Code skills at user scope."""
 import os
 from pathlib import Path
 import shlex
@@ -9,8 +9,8 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def install_skill(source, destination, launcher):
-    """Replace the generated installation, including files removed from source."""
+def validate_skill_paths(source, destination):
+    """Check an installation before changing either skill or the launcher."""
     source = Path(source).resolve(strict=True)
     destination = Path(destination).absolute()
     if (destination.is_symlink()
@@ -19,13 +19,19 @@ def install_skill(source, destination, launcher):
             or source.is_relative_to(destination.resolve())):
         raise ValueError('Skill source and installation must be separate ordinary directories')
     if destination.exists() and not (destination / '.containerize-dsh-install').is_file():
-        raise ValueError('An unmanaged dsh-work skill already exists; refusing to overwrite')
+        raise ValueError(f'An unmanaged dsh-work skill already exists at {destination}; refusing to overwrite')
     if not (source / 'SKILL.md').is_file():
         raise ValueError('Canonical skill source is missing SKILL.md')
+    return source, destination
+
+
+def install_skill(source, destination, launcher, *, claude_code=False):
+    """Replace the generated installation, including files removed from source."""
+    source, destination = validate_skill_paths(source, destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     # Stage on the same filesystem. A failed copy leaves the current install intact.
     # Use normal inherited permissions: Python's private temporary directories on
-    # Windows would make the renamed installation unreadable to sandboxed Codex.
+    # Windows would make the renamed installation unreadable to sandboxed agents.
     staging = destination.parent / ('.dsh-work-update-' + uuid.uuid4().hex)
     staging.mkdir()
     staging = staging.resolve()
@@ -33,7 +39,16 @@ def install_skill(source, destination, launcher):
         raise ValueError('Staging directory escaped the installation parent')
     try:
         fresh, previous = staging / 'fresh', staging / 'previous'
-        shutil.copytree(source, fresh)
+        # Claude Code uses frontmatter instead of Codex's agents/ metadata.
+        ignore = shutil.ignore_patterns('agents') if claude_code else None
+        shutil.copytree(source, fresh, ignore=ignore)
+        if claude_code:
+            skill_file = fresh / 'SKILL.md'
+            content = skill_file.read_text(encoding='utf-8')
+            if not content.startswith('---\n') or '\n---\n' not in content:
+                raise ValueError('Canonical skill source is missing YAML frontmatter')
+            content = content.replace('---\n', '---\ndisable-model-invocation: true\n', 1)
+            skill_file.write_text(content, encoding='utf-8')
         (fresh / '.containerize-dsh-install').write_text(str(ROOT), encoding='utf-8')
         (fresh / 'references' / 'launcher.txt').write_text(str(launcher) + '\n', encoding='utf-8')
         if destination.exists():
@@ -51,10 +66,14 @@ def install_skill(source, destination, launcher):
 
 def main():
     codex = Path(os.environ.get('CODEX_HOME', Path.home() / '.codex'))
-    skill = codex / 'skills' / 'dsh-work'
+    claude = Path(os.environ.get('CLAUDE_CONFIG_DIR', Path.home() / '.claude'))
+    codex_skill = codex / 'skills' / 'dsh-work'
+    claude_skill = claude / 'skills' / 'dsh-work'
     source = ROOT / 'skills' / 'dsh-work'
-    if skill.exists() and not (skill / '.containerize-dsh-install').exists():
-        raise ValueError('An unmanaged dsh-work skill already exists; refusing to overwrite')
+    for skill in (codex_skill, claude_skill):
+        validate_skill_paths(source, skill)
+    if codex_skill.resolve() == claude_skill.resolve():
+        raise ValueError('Codex and Claude Code skills must use separate installation directories')
     if sys.platform == 'win32':
         import winreg
         bindir = Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData/Local')) / 'containerize-dsh' / 'bin'
@@ -70,7 +89,8 @@ def main():
     launcher.write_text(content, encoding='utf-8')
     if sys.platform != 'win32':
         launcher.chmod(0o755)
-    install_skill(source, skill, launcher)
+    install_skill(source, codex_skill, launcher)
+    install_skill(source, claude_skill, launcher, claude_code=True)
     if sys.platform == 'win32':
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, 'Environment') as key:
             try:
@@ -84,9 +104,10 @@ def main():
         result = ctypes.c_size_t()
         ctypes.windll.user32.SendMessageTimeoutW(65535, 26, 0, 'Environment', 2, 5000, ctypes.byref(result))
     print('Launcher:', launcher)
-    print('Skill:', skill)
+    print('Codex skill:', codex_skill)
+    print('Claude Code skill:', claude_skill)
     print('Restart your terminal/app to refresh PATH and skill discovery.' if sys.platform == 'win32'
-          else 'Ensure ~/.local/bin is on PATH; restart Codex for skill discovery.')
+          else 'Ensure ~/.local/bin is on PATH; restart Codex/Claude Code for skill discovery.')
 
 
 if __name__ == '__main__':
