@@ -111,7 +111,11 @@ def main():
                 'if command -v dotnet || command -v Xvfb; then exit 1; fi')
             run('docker', 'exec', cid, 'node', '--input-type=module', '-e', '''
                 import assert from 'node:assert/strict';
-                import Picker from '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-host-directory-picker-browse/lib/index.js';
+                import { createRequire } from 'node:module';
+                import { pathToFileURL } from 'node:url';
+                const dsh = createRequire('/usr/local/lib/node_modules/@deepseek-ai/dsh/package.json');
+                const webApp = createRequire(dsh.resolve('@deepseek-ai/dsh-web-app'));
+                const { default: Picker } = await import(pathToFileURL(webApp.resolve('@deepseek-ai/dsh-host-directory-picker-browse')));
                 const picker = { config: { maxEntries: 1000 } };
                 const initial = await Picker.prototype.list.call(picker);
                 assert.equal(initial.path, '/workspace');

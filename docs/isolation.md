@@ -67,7 +67,7 @@ official Node image. Ubuntu supplies glibc compatibility without project SDKs or
 graphics libraries; add those through a plugin. Git, Python, ripgrep, and socat
 support the runtime and transfer helpers.
 
-DSH defaults to `0.1.5-rc.1`. Ubuntu/Node tags, apt packages, and npm transitive
+DSH defaults to `0.1.5-rc.3`. Ubuntu/Node tags, apt packages, and npm transitive
 dependencies can change between builds, so this isn't a fully reproducible lock.
 The npm install explicitly allows install scripts for the listed runtime
 dependencies. Review upstream changes when upgrading.
