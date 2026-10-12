@@ -82,7 +82,7 @@ class TaskBundleExportTests(unittest.TestCase):
         transfer.assert_called_once()
         passed_box, args = transfer.call_args.args
         self.assertIs(passed_box, box)
-        self.assertEqual(vars(args), dict(action='export', force=True, snapshot=True,
+        self.assertEqual(vars(args), dict(plugins=[], action='export', force=True, snapshot=True,
                                          include_untracked=True, bundle='work.bundle'))
 
     def test_current_repository_selection_requires_unique_active_task(self):

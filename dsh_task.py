@@ -56,7 +56,15 @@ def host(task):
 
 
 def args_for(task, action, **kwargs):
-    return argparse.Namespace(**task['resolved'], action=action, **kwargs)
+    settings = task['resolved'].copy()
+    # Existing task manifests retain their startup selection without reading profiles.
+    if 'plugin' in settings:
+        if 'plugins' in settings:
+            raise ValueError('Recorded plugin and plugins are mutually exclusive.')
+        plugin = settings.pop('plugin')
+        settings['plugins'] = [plugin] if plugin else []
+    settings.setdefault('plugins', [])
+    return argparse.Namespace(**settings, action=action, **kwargs)
 
 
 @contextmanager
@@ -334,15 +342,14 @@ def start(args):
     if root.is_relative_to(repo) or root.is_relative_to(dsh.ROOT):
         raise ValueError('Task state must be outside repositories')
     directory = root / task_id
-    directory.mkdir(parents=True, exist_ok=False)
     resolved = dict(name='dsh-task-' + task_id, port=args.port or profile.get('port', 11111),
-                    plugin=profile.get('plugin'), key_file=profile.get('key_file'))
-    for key in ('plugin', 'key_file'):
-        if resolved[key]:
-            resolved[key] = str(Path(resolved[key]).resolve(strict=True))
+                    plugins=dsh.plugin_paths(profile.get('plugins', []), strict=True), key_file=profile.get('key_file'))
+    if resolved['key_file']:
+        resolved['key_file'] = str(Path(resolved['key_file']).resolve(strict=True))
     task = dict(id=task_id, profile=args.profile, repo=str(repo), repository=identity(repo),
                 target=target, source_head=git(repo, 'rev-parse', 'HEAD'), resolved=resolved,
                 volumes={k: resolved['name'] + '_' + k for k in ('workspace', 'home')}, reviews=[])
+    directory.mkdir(parents=True, exist_ok=False)
     save(directory, task)
     print('Task ID:', task_id, flush=True)
     with locked(task_id), sandbox(task) as box:
@@ -353,6 +360,7 @@ def start(args):
         images = docker_list('image', 'ls', '--format', '{{.Repository}}:{{.Tag}}')
         if args.rebuild or box.env['DSH_IMAGE'] not in images:
             box.build()
+        box.preflight()
         dsh.transfer(box, args_for(task, 'init', repo=str(repo), revision=args.revision,
                                    snapshot=args.snapshot, include_untracked=args.include_untracked))
         initial = audit(box)

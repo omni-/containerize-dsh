@@ -10,6 +10,9 @@ It needs Python and Git, but no Docker daemon or provider key. Tests use tempora
 Git repositories and fake Docker resources to cover transfer/import boundaries,
 profiles, Compose validation, task records, integration, cleanup, discard, and
 installer updates. They leave active tasks alone.
+When Node is available on the host, the suite also runs the Cordis composition
+tests through Node's built-in test runner. The Docker composition smoke test
+checks the same parser and runtime behavior without requiring host Node.
 
 ## Docker smoke tests
 
@@ -46,5 +49,16 @@ Both use a temporary registry, a synthetic repository, and an available localhos
 port. They clear the provider key, refuse image builds, and make no model calls.
 Their final teardown removes only their recorded fixture containers, networks,
 and volumes, including the fixture home volume after checking its preservation.
+
+The plugin composition smoke test builds two synthetic derived layers, starts a
+saved-profile task, and verifies separate runtime mounts, per-plugin Compose
+interpolation, actual Cordis modules and MCP subprocesses, ordered bootstrap and
+validation, conflict errors, headless CLI startup, and isolation. It then changes
+the registry and resumes the original ordered selection. It also makes no model
+requests, clears the provider key, and removes only its fixture resources.
+
+```sh
+python tests/plugins_docker_smoke.py
+```
 
 The [plugin contract](plugins.md) describes the example and supported overrides.

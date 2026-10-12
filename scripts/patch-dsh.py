@@ -1,9 +1,11 @@
-"""Compatibility fix for the directory browser in pinned DSH 0.1.5-rc.3.
+"""Workspace default for the directory browser in pinned DSH 0.2.1-alpha.2.
 
 Session creation already defaults to process.cwd(), but the directory browser
 defaults to homedir() and has no configuration for its initial directory.
 Keep HOME (credentials, history, caches) separate from the project directory.
 Fail the image build if an upstream change invalidates this narrow patch.
+Upstream still uses resolve(path ?? home) in this release, with only maxEntries
+in its Config schema; there is no initial-directory setting to use instead.
 """
 from pathlib import Path
 

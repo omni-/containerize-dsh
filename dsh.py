@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Explicit sandbox profiles and a Git bundle bridge. Python standard library only."""
 import argparse
+import copy
 from contextlib import contextmanager
 import hashlib
 import json
@@ -77,55 +78,228 @@ def validate_compose(config, core):
         raise ValueError('Home and workspace must use separate volumes.')
 
 
+def plugin_paths(values, *, absolute=False, strict=False):
+    if not isinstance(values, list):
+        raise ValueError('Profile plugins must be an ordered list of paths.')
+    paths = []
+    for index, value in enumerate(values, 1):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f'Plugin {index} must be a nonempty string path.')
+        path = Path(value).expanduser()
+        if absolute and not path.is_absolute():
+            raise ValueError(f'Plugin {index} must be an absolute path (or start with ~).')
+        try:
+            path = path.resolve(strict=strict)
+        except OSError as error:
+            raise ValueError(f'Plugin {index} directory is unavailable: {value}') from error
+        if strict and not path.is_dir():
+            raise ValueError(f'Plugin {index} is not a directory: {path}')
+        if path in paths:
+            raise ValueError(f'Duplicate plugin path at positions {paths.index(path) + 1} and {index}: {path}')
+        paths.append(path)
+    return [str(path) for path in paths]
+
+
+class Plugin:
+    def __init__(self, directory):
+        self.directory = Path(directory)
+        if self.directory.is_relative_to(ROOT) and not self.directory.is_relative_to(ROOT / 'examples'):
+            raise ValueError(f'Private plugins must live outside the public repository: {directory}')
+        try:
+            self.manifest = json.loads((self.directory / 'plugin.json').read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError) as error:
+            raise ValueError(f'Cannot read plugin.json for {directory}') from error
+        if (not isinstance(self.manifest, dict)
+                or set(self.manifest) - {'version', 'runtime', 'compose', 'build'}
+                or type(self.manifest.get('version')) is not int or self.manifest['version'] != 1):
+            raise ValueError(f'Unsupported plugin.json contract: {directory}')
+        for key in ('runtime', 'compose'):
+            if key in self.manifest:
+                path = self.path(self.manifest[key])
+                if (key == 'runtime' and not path.is_dir()) or (key == 'compose' and not path.is_file()):
+                    raise ValueError(f'Plugin {directory}: {key} must be a {"directory" if key == "runtime" else "file"}.')
+        if 'build' in self.manifest:
+            build = self.manifest['build']
+            if not isinstance(build, dict) or set(build) - {'context', 'dockerfile'}:
+                raise ValueError(f'Plugin {directory}: build allows only context and dockerfile.')
+            if not self.path(build.get('context', '.')).is_dir() or not self.path(build.get('dockerfile', 'Dockerfile')).is_file():
+                raise ValueError(f'Plugin {directory}: build needs a context directory and Dockerfile.')
+
+    def path(self, relative):
+        if not isinstance(relative, str) or not relative.strip():
+            raise ValueError(f'Plugin {self.directory}: manifest paths must be nonempty strings.')
+        try:
+            path = (self.directory / relative).resolve(strict=True)
+        except OSError as error:
+            raise ValueError(f'Plugin {self.directory}: missing manifest path {relative}') from error
+        if not path.is_relative_to(self.directory):
+            raise ValueError(f'Plugin {self.directory}: manifest paths must stay inside the selected plugin directory.')
+        return path
+
+    def extends_base(self):
+        """Prove the final Dockerfile stage descends from the supplied image."""
+        source = self.path(self.manifest['build'].get('dockerfile', 'Dockerfile')).read_text(encoding='utf-8-sig')
+        source = re.sub(r'\\\r?\n', ' ', source)
+        stages, declared, seen_from, inherited, stage_index = {}, False, False, False, 0
+        for line in source.splitlines():
+            line = line.strip()
+            if not seen_from and re.match(r'ARG\s+DSH_BASE_IMAGE(?:\s|=|$)', line, re.I):
+                declared = True
+            match = re.fullmatch(r'FROM\s+(?:--platform=\S+\s+)?(\S+)(?:\s+AS\s+(\S+))?\s*', line, re.I)
+            if match:
+                seen_from = True
+                base, alias = match.groups()
+                inherited = (declared and base in ('${DSH_BASE_IMAGE}', '$DSH_BASE_IMAGE')) or stages.get(base.lower(), False)
+                stages[str(stage_index)] = inherited
+                stage_index += 1
+                if alias:
+                    stages[alias.lower()] = inherited
+        return seen_from and inherited
+
+
+def compose_plugins(core, contributions):
+    """Compose only individually validated overrides; explicit equal values may agree."""
+    result = copy.deepcopy(core)
+    claims = {}
+
+    def assign(path, value, plugin):
+        if path in claims:
+            owner, previous = claims[path]
+            if previous != value:
+                raise ValueError(f'Plugins {owner!s} and {plugin!s} conflict on Compose {".".join(path)}.')
+        else:
+            claims[path] = (plugin, value)
+        target = result
+        for key in path[:-1]:
+            target = target.setdefault(key, {})
+        if value is MISSING:
+            target.pop(path[-1], None)
+        else:
+            target[path[-1]] = copy.deepcopy(value)
+
+    for plugin, raw, config in contributions:
+        validate_compose(config, core)
+        supplied = raw.get('services', {}).get('dsh', {})
+        service = config['services']['dsh']
+        fixed = core['services']['dsh']
+        environment = service.get('environment', {})
+        baseline = fixed.get('environment', {})
+        keys = set(supplied.get('environment') or {}) | {
+            key for key in environment.keys() | baseline.keys()
+            if environment.get(key, MISSING) != baseline.get(key, MISSING)}
+        for key in sorted(keys):
+            assign(('services', 'dsh', 'environment', key), environment.get(key, MISSING), plugin)
+        for key in ('cpus', 'mem_limit', 'mem_reservation', 'pids_limit', 'shm_size', 'tmpfs'):
+            if key in supplied or service.get(key, MISSING) != fixed.get(key, MISSING):
+                value = service.get(key, MISSING)
+                if key == 'tmpfs':
+                    value = sorted(value)
+                assign(('services', 'dsh', key), value, plugin)
+        for key, definition in (raw.get('volumes') or {}).items():
+            if definition or config['volumes'][key] != core['volumes'][key]:
+                assign(('volumes', key), config['volumes'][key], plugin)
+    if result['volumes']['home']['name'] == result['volumes']['workspace']['name']:
+        owners = [claims[('volumes', key)][0] for key in ('home', 'workspace')]
+        raise ValueError(f'Plugins {owners[0]} and {owners[1]} conflict on Compose volumes: '
+                         'home and workspace must use separate volumes.')
+    validate_compose(result, core)
+    return result
+
+
+MISSING = object()
+
+
+def compose_literals(value):
+    """Keep resolved strings literal when Compose reads generated configuration."""
+    if isinstance(value, str):
+        return value.replace('$', '$$')
+    if isinstance(value, list):
+        return [compose_literals(item) for item in value]
+    if isinstance(value, dict):
+        return {key: compose_literals(item) for key, item in value.items()}
+    return value
+
+
 class Sandbox:
     def __init__(self, args, temp):
         self.args = args
         self.env = os.environ.copy()
         # Do not load a repository .env or implicit compose overrides.
         self.env.update(DSH_PORT=str(args.port), DSH_IMAGE='dsh-sandbox:local')
-        self.plugin = None
-        self.manifest = {}
-        files = [ROOT / 'compose.yaml']
+        self.plugins = [Plugin(path) for path in plugin_paths(args.plugins, strict=True)]
+        builders = [plugin for plugin in self.plugins if 'build' in plugin.manifest]
+        if len(self.plugins) > 1:
+            for index, plugin in enumerate(builders):
+                if not plugin.extends_base():
+                    other = builders[index - 1] if index else next(p for p in self.plugins if p is not plugin)
+                    raise ValueError(f'Plugins {other.directory} and {plugin.directory} have incompatible build contributions: '
+                                     f'{plugin.directory} final stage must inherit ARG DSH_BASE_IMAGE / FROM ${{DSH_BASE_IMAGE}}.')
+        self.builds = []
+        for plugin in builders:
+            prefix = self.plugins[:self.plugins.index(plugin) + 1]
+            # Keep the established single-plugin image name; hash ordered prefixes for stacks.
+            identity = str(plugin.directory) if len(self.plugins) == 1 else json.dumps([str(p.directory) for p in prefix])
+            digest = hashlib.sha256(identity.encode()).hexdigest()[:12]
+            self.env['DSH_IMAGE'] = f'dsh-plugin:{digest}'
+            self.builds.append((plugin, self.env['DSH_IMAGE']))
         extra = {'services': {'dsh': {}}}
         service = extra['services']['dsh']
-        if args.plugin:
-            self.plugin = Path(args.plugin).resolve(strict=True)
-            if self.plugin.is_relative_to(ROOT) and not self.plugin.is_relative_to(ROOT / 'examples'):
-                raise ValueError('Private plugins must live outside the public repository.')
-            self.manifest = json.loads((self.plugin / 'plugin.json').read_text())
-            if set(self.manifest) - {'version', 'runtime', 'compose', 'build'} or self.manifest.get('version') != 1:
-                raise ValueError('Unsupported plugin.json contract')
-            self.env['DSH_PLUGIN_DIR'] = str(self.plugin)
-            if 'compose' in self.manifest:
-                files.append(self.path(self.manifest['compose']))
-            if 'runtime' in self.manifest:
-                runtime = self.path(self.manifest['runtime'])
-                service['volumes'] = [dict(type='bind', source=str(runtime),
-                    target='/opt/dsh-plugin', read_only=True,
-                    bind=dict(create_host_path=False))]
-            if 'build' in self.manifest:
-                digest = hashlib.sha256(str(self.plugin).encode()).hexdigest()[:12]
-                self.env['DSH_IMAGE'] = f'dsh-plugin:{digest}'
+        runtimes = []
+        for index, plugin in enumerate(self.plugins):
+            if 'runtime' in plugin.manifest:
+                target = '/opt/dsh-plugin' if index == 0 else f'/opt/dsh-plugins/{index + 1}'
+                service.setdefault('volumes', []).append(dict(type='bind',
+                    source=str(plugin.path(plugin.manifest['runtime'])), target=target,
+                    read_only=True, bind=dict(create_host_path=False)))
+                runtimes.append(dict(plugin=str(plugin.directory), runtime=target))
+        service['environment'] = dict(DSH_PLUGIN_RUNTIMES=json.dumps(runtimes))
         if args.key_file:
             key = external_file(args.key_file)
             service.setdefault('volumes', []).append(dict(type='bind', source=str(key),
                 target='/run/secrets/deepseek', read_only=True, bind=dict(create_host_path=False)))
-            service['environment'] = dict(DEEPSEEK_API_KEY='', DEEPSEEK_API_KEY_FILE='/run/secrets/deepseek')
+            service.setdefault('environment', {}).update(DEEPSEEK_API_KEY='', DEEPSEEK_API_KEY_FILE='/run/secrets/deepseek')
         generated = Path(temp) / 'profile.json'
-        generated.write_text(json.dumps(extra), encoding='utf-8')
-        files.append(generated)
-        self.command = ['docker', 'compose', '--project-name', args.name,
+        generated.write_text(json.dumps(compose_literals(extra)), encoding='utf-8')
+        self.base_command = ['docker', 'compose', '--project-name', args.name,
                         '--project-directory', str(ROOT), '--env-file', os.devnull]
-        self.core_command = self.command + ['-f', str(ROOT / 'compose.yaml'), '-f', str(generated)]
-        for file in files:
-            self.command.extend(['-f', str(file)])
+        self.core_command = self.base_command + ['-f', str(ROOT / 'compose.yaml'), '-f', str(generated)]
+        core = json.loads(run(*self.core_command, 'config', '--format', 'json', capture=True, env=self.env))
+        contributions = []
+        for plugin in self.plugins:
+            if 'compose' not in plugin.manifest:
+                continue
+            override = str(plugin.path(plugin.manifest['compose']))
+            env = {**self.env, 'DSH_PLUGIN_DIR': str(plugin.directory)}
+            try:
+                raw = json.loads(run(*self.base_command, '-f', override, 'config', '--no-consistency',
+                                     '--no-normalize', '--format', 'json', capture=True, env=env))
+                config = json.loads(run(*self.base_command, '-f', str(ROOT / 'compose.yaml'), '-f', override,
+                                       '-f', str(generated), 'config', '--format', 'json', capture=True, env=env))
+                validate_compose(config, core)
+            except (ValueError, subprocess.CalledProcessError) as error:
+                raise ValueError(f'Plugin {plugin.directory}: {error}') from error
+            contributions.append((plugin.directory, raw, config))
+        composed = Path(temp) / 'composed.json'
+        # `compose config` already escapes literal dollars for round-tripping.
+        config = compose_plugins(core, contributions)
+        composed.write_text(json.dumps(config), encoding='utf-8')
+        self.command = self.base_command + ['-f', str(composed)]
         self.check_config()
-
-    def path(self, relative):
-        path = (self.plugin / relative).resolve(strict=True)
-        if not path.is_relative_to(self.plugin):
-            raise ValueError('Manifest paths must stay inside the selected plugin directory.')
-        return path
+        # Parsing needs only runtime files. Do not create task resources on a failed check.
+        check = copy.deepcopy(config)
+        check.pop('volumes', None)
+        check.pop('networks', None)
+        service = check['services']['dsh']
+        service.pop('ports', None)
+        service.pop('networks', None)
+        service['network_mode'] = 'none'
+        targets = {item['runtime'] for item in runtimes}
+        service['volumes'] = [mount for mount in service.get('volumes', []) if mount['target'] in targets]
+        service.setdefault('environment', {})['DEEPSEEK_API_KEY'] = ''
+        service['environment'].pop('DEEPSEEK_API_KEY_FILE', None)
+        preflight = Path(temp) / 'preflight.json'
+        preflight.write_text(json.dumps(check), encoding='utf-8')
+        self.preflight_command = self.base_command + ['-f', str(preflight)]
 
     def compose(self, *args, capture=False):
         return run(*self.command, *args, capture=capture, env=self.env)
@@ -138,12 +312,18 @@ class Sandbox:
 
     def build(self):
         run('docker', 'build', '-t', 'dsh-sandbox:local', ROOT)
-        if 'build' in self.manifest:
-            build = self.manifest['build']
-            run('docker', 'build', '-t', self.env['DSH_IMAGE'],
-                '--build-arg', 'DSH_BASE_IMAGE=dsh-sandbox:local',
-                '-f', self.path(build.get('dockerfile', 'Dockerfile')),
-                self.path(build.get('context', '.')))
+        base = 'dsh-sandbox:local'
+        for plugin, image in self.builds:
+            build = plugin.manifest['build']
+            run('docker', 'build', '-t', image, '--build-arg', 'DSH_BASE_IMAGE=' + base,
+                '-f', plugin.path(build.get('dockerfile', 'Dockerfile')),
+                plugin.path(build.get('context', '.')))
+            base = image
+
+    def preflight(self):
+        if self.plugins:
+            run(*self.preflight_command, 'run', '--rm', '--no-deps', '-T', '--entrypoint', 'node',
+                'dsh', '/opt/dsh/plugin-runtime.mjs', 'check', env=self.env)
 
     @contextmanager
     def maintenance(self, *, allow_running=False):
@@ -251,16 +431,22 @@ def load_profile(name):
     if name not in profiles:
         raise ValueError(f'Unknown profile: {name}')
     profile = profiles[name]
-    if not isinstance(profile, dict) or set(profile) - {'plugin', 'repo', 'name', 'port', 'key_file'}:
-        raise ValueError('Profile allows only plugin, repo, name, port and key_file.')
+    if not isinstance(profile, dict) or set(profile) - {'plugin', 'plugins', 'repo', 'name', 'port', 'key_file'}:
+        raise ValueError('Profile allows only plugin, plugins, repo, name, port and key_file.')
+    if 'plugin' in profile and 'plugins' in profile:
+        raise ValueError('Profile plugin and plugins are mutually exclusive.')
     profile = profile.copy()
+    if 'plugin' in profile:
+        profile['plugins'] = [profile.pop('plugin')]
     for key, value in profile.items():
-        if key == 'port':
+        if key == 'plugins':
+            profile[key] = plugin_paths(value, absolute=True)
+        elif key == 'port':
             if type(value) is not int or not 1 <= value <= 65535:
                 raise ValueError('Profile port must be an integer from 1 to 65535.')
         elif not isinstance(value, str) or not value.strip():
             raise ValueError(f'Profile {key} must be a nonempty string.')
-        elif key in {'plugin', 'repo', 'key_file'}:
+        elif key in {'repo', 'key_file'}:
             expanded = Path(value).expanduser()
             if not expanded.is_absolute():
                 raise ValueError(f'Profile {key} must be an absolute path (or start with ~).')
@@ -295,6 +481,8 @@ def parse_args(argv=None):
         if action == 'import':
             child.add_argument('--branch')
     args = p.parse_args(argv)
+    selected_plugin = vars(args).pop('plugin')
+    args.plugins = [selected_plugin] if selected_plugin is not None else None
     if args.profile is not None:
         try:
             profile = load_profile(args.profile)
@@ -307,6 +495,8 @@ def parse_args(argv=None):
         args.name = 'dsh-sandbox'
     if args.port is None:
         args.port = 11111
+    if args.plugins is None:
+        args.plugins = []
     if not re.fullmatch('[a-z0-9][a-z0-9_-]*', args.name):
         p.error('Invalid sandbox name')
     if not 1 <= args.port <= 65535:
@@ -330,7 +520,11 @@ def main():
         elif args.action == 'build':
             sandbox.build()
         elif args.action == 'up':
+            sandbox.preflight()
             sandbox.compose('up', '-d', '--no-build')
+        elif args.action == 'restart':
+            sandbox.preflight()
+            sandbox.compose('restart')
         elif args.action == 'url':
             logs = sandbox.compose('logs', '--no-color', '--tail', '200', 'dsh', capture=True)
             tokens = re.findall(r'http://127\.0\.0\.1:3080/\?token=([^\s]+)', logs)
@@ -342,8 +536,7 @@ def main():
         elif args.action == 'validate':
             sandbox.compose('exec', '-T', 'dsh', 'sh', '-eu', '-c',
                 'test "$(id -u)" = 10001; test -w /workspace; test -w /home/agent; '
-                'dsh --version; if [ -f /opt/dsh-plugin/validate.sh ]; then '
-                'sh /opt/dsh-plugin/validate.sh; fi')
+                'dsh --version; node /opt/dsh/plugin-runtime.mjs validate')
         elif args.action == 'config':
             print('Compose configuration passed isolation checks. No secrets printed.')
         else:

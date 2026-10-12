@@ -36,12 +36,28 @@ dsh-task start --task fix-parser --open
 This transfers `HEAD` and opens DSH in your browser. The current branch becomes
 the integration target; choose another with `--target`. Enter provider credentials
 in the UI, or set `DEEPSEEK_API_KEY` before starting the task. The UI can start
-without a provider key. For a key file or project plugin, use a
+without a provider key. To save a key file or select project plugins, use a
 [saved profile](docs/profiles.md):
 
 ```sh
 dsh-task start --task fix-parser --profile my-project --open
 ```
+
+Saved profiles can compose an ordered capability stack:
+
+```json
+{
+  "omnigame": {
+    "plugins": ["/plugins/dotnet", "/plugins/rea", "/projects/omnigame/.dsh-plugin"],
+    "repo": "/projects/omnigame"
+  }
+}
+```
+
+The legacy singular `plugin` field still works; a profile cannot contain both
+forms. Duplicate paths and incompatible contributions fail with clear errors.
+See the [composition contract](docs/plugins.md#composition). These example
+capability paths do not add .NET or REA integrations to this repository.
 
 Without a profile, the defaults are the current repository, no plugin, and port
 11111. Each start creates a unique task ID and its own home/workspace volumes.
@@ -53,9 +69,14 @@ Project SDKs such as .NET belong in a [project plugin](docs/plugins.md), selecte
 through a [saved profile](docs/profiles.md). Install them at image build time;
 the running agent cannot use apt against the read-only root filesystem.
 New sessions and the browser's initial directory default to `/workspace`; home
-remains `/home/agent` for credentials, history, and caches. The pinned DSH release
+remains `/home/agent` for credentials, history, and caches. DSH is pinned to
+`0.2.1-alpha.2`. This release still
 needs a small build-time directory-browser patch for this default; image builds
 fail if an upstream change makes that patch incompatible.
+Rebuild cached images after upgrading: use `dsh-task start ... --rebuild`, or
+`python dsh.py ... build` followed by `up`. Existing running tasks keep their
+original container image. See the [upgrade notes](docs/task-notes/dsh-0.2.1-alpha.2.md)
+for upstream configuration and native-plugin compatibility changes.
 
 To send your current edits instead of committed `HEAD`, add `--snapshot`.
 Add `--include-untracked` only after checking which new files you want to share:

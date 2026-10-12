@@ -98,7 +98,7 @@ class TaskTests(unittest.TestCase):
                     self.assertEqual(task['repo'], str(self.repo.resolve()))
                     self.assertEqual(task['profile'], selected)
                     self.assertEqual(task['resolved']['port'], port)
-                    self.assertIsNone(task['resolved']['plugin'])
+                    self.assertEqual(task['resolved']['plugins'], [])
                     self.assertIsNone(task['resolved']['key_file'])
                     self.assertEqual(transfer.call_args.args[1].repo, str(self.repo.resolve()))
                     if selected:
@@ -118,6 +118,37 @@ class TaskTests(unittest.TestCase):
         self.assertTrue((self.repo / 'host-new').exists())
         self.assertEqual(self.task['integrated']['review'], review['revision'])
         self.assertEqual(git(self.repo, 'rev-parse', 'HEAD'), prepared['revision'])
+
+    def test_start_records_resolved_plugin_order_independent_of_profile_edits(self):
+        paths = [self.root / 'two', self.root / 'one']
+        for path in paths:
+            path.mkdir()
+        registry = self.root / 'profiles.json'
+        registry.write_text(json.dumps({'saved': {'plugins': list(map(str, paths)),
+                                                'repo': str(self.repo), 'port': 12345}}))
+        box = Mock()
+        box.env = {'DSH_IMAGE': 'cached'}
+        box.compose.return_value = 'container-id'
+        with patch.object(taskmod.dsh, 'profiles_path', return_value=registry), \
+                patch.object(taskmod, 'sandbox') as sandbox, \
+                patch.object(taskmod, 'docker_list', side_effect=lambda *args: ['cached'] if args[0] == 'image' else []), \
+                patch.object(taskmod, 'audit', return_value={'base': self.head, 'host': self.head}), \
+                patch.object(taskmod.dsh, 'transfer'), \
+                patch.object(taskmod.dsh, 'run', return_value='[{"CreatedAt":"now","Id":"container-id"}]'), \
+                patch.object(taskmod, 'show_url'):
+            sandbox.return_value.__enter__.return_value = box
+            taskmod.main(['start', '--task', 'fixture', '--profile', 'saved'])
+            manifests = list(taskmod.state_root().glob('*/manifest.json'))
+            self.assertEqual(len(manifests), 1)
+            recorded = json.loads(manifests[0].read_text())
+            registry.write_text(json.dumps({'saved': {'plugins': [str(self.root / 'missing')], 'port': 54321}}))
+            for action in ('status', 'export', 'resume'):
+                args = taskmod.args_for(recorded, action)
+                self.assertEqual(args.plugins, list(map(str, paths)))
+                self.assertEqual(args.port, 12345)
+            self.assertNotIn('plugin', recorded['resolved'])
+            box.build.assert_not_called()
+            box.preflight.assert_called_once()
 
     def test_dirty_target_preserves_index_and_files_and_blocks_cleanup(self):
         self.review()

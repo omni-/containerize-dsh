@@ -1,0 +1,10 @@
+{
+  "omnigame": {
+    "plugins": [
+      "/plugins/dotnet",
+      "/plugins/rea",
+      "/projects/omnigame/.dsh-plugin"
+    ],
+    "repo": "/projects/omnigame"
+  }
+}

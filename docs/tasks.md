@@ -144,9 +144,12 @@ Repeating a completed discard is safe; retry an interrupted discard to finish it
 
 Task state lives beside the [profile registry](profiles.md), under
 `tasks/<task-id>/`, outside source repositories. It includes repository identity,
-the target branch, source HEAD, transferred base, resolved settings, Docker
+the target branch, source HEAD, transferred base, resolved settings (including
+the fully resolved ordered `plugins` list), Docker
 identities, review bundles/refs/reports, and integration results. Keep it private.
 Failed or interrupted operations leave their records and resources for recovery.
+Old task records with singular `plugin` are normalized when read without consulting
+the current saved profile. Later profile edits do not alter any recorded selection.
 
 Review and integration verify the source repository's Git common directory.
 Docker ownership checks compare the recorded container, volume labels and creation

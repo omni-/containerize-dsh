@@ -37,8 +37,8 @@ class ProfileTests(unittest.TestCase):
         with patch.object(dsh, 'load_profile') as load:
             args = dsh.parse_args(['up'])
         load.assert_not_called()
-        self.assertEqual((args.name, args.port, args.plugin, args.key_file),
-                         ('dsh-sandbox', 11111, None, None))
+        self.assertEqual((args.name, args.port, args.plugins, args.key_file),
+                         ('dsh-sandbox', 11111, [], None))
 
     def test_selected_profile_supplies_transfer_and_sandbox_defaults(self):
         profile = dict(plugin=str(self.root / 'external plugin'), repo=str(self.root / 'repo'),
@@ -51,7 +51,8 @@ class ProfileTests(unittest.TestCase):
                     argv += ['--bundle', 'work.bundle']
                 args = dsh.parse_args(argv)
                 for key, value in profile.items():
-                    self.assertEqual(getattr(args, key), value)
+                    self.assertEqual(getattr(args, 'plugins' if key == 'plugin' else key),
+                                     [value] if key == 'plugin' else value)
 
     def test_explicit_arguments_override_every_saved_field(self):
         self.save(dict(plugin=str(self.root), repo=str(self.root), name='saved',
@@ -59,8 +60,8 @@ class ProfileTests(unittest.TestCase):
         args = dsh.parse_args(['--profile', 'sample', '--plugin', 'explicit-plugin',
                               '--name', 'dsh-sandbox', '--port', '11111',
                               '--key-file', 'explicit-key', 'init', '--repo', 'explicit-repo'])
-        self.assertEqual((args.plugin, args.name, args.port, args.key_file, args.repo),
-                         ('explicit-plugin', 'dsh-sandbox', 11111, 'explicit-key', 'explicit-repo'))
+        self.assertEqual((args.plugins, args.name, args.port, args.key_file, args.repo),
+                         (['explicit-plugin'], 'dsh-sandbox', 11111, 'explicit-key', 'explicit-repo'))
 
     def test_partial_profile_keeps_defaults_and_requires_repo(self):
         self.save({})
@@ -89,7 +90,39 @@ class ProfileTests(unittest.TestCase):
     def test_expands_home_without_resolving_against_checkout(self):
         self.save(dict(plugin='~/private-plugin'))
         args = dsh.parse_args(['--profile', 'sample', 'up'])
-        self.assertEqual(args.plugin, str(Path.home() / 'private-plugin'))
+        self.assertEqual(args.plugins, [str(Path.home() / 'private-plugin')])
+
+    def test_plugin_lists_preserve_order_including_empty_and_single(self):
+        for paths in ([], [str(self.root / 'one')],
+                      [str(self.root / 'two'), str(self.root / 'one')]):
+            with self.subTest(paths=paths):
+                self.save(dict(plugins=paths))
+                args = dsh.parse_args(['--profile', 'sample', 'up'])
+                self.assertEqual(args.plugins, paths)
+                self.assertNotIn('plugin', vars(args))
+
+    def test_legacy_profile_normalizes_immediately(self):
+        self.save(dict(plugin=str(self.root)))
+        self.assertEqual(dsh.load_profile('sample'), {'plugins': [str(self.root)]})
+
+    def test_singular_cli_plugin_replaces_entire_saved_list(self):
+        self.save(dict(plugins=[str(self.root / 'one'), str(self.root / 'two')]))
+        args = dsh.parse_args(['--profile', 'sample', '--plugin', 'explicit', 'up'])
+        self.assertEqual(args.plugins, ['explicit'])
+
+    def test_both_forms_are_rejected_even_with_empty_list_or_cli_override(self):
+        self.save(dict(plugin=str(self.root), plugins=[]))
+        self.rejects(['--profile', 'sample', '--plugin', 'explicit', 'up'], 'mutually exclusive')
+
+    def test_duplicate_normalized_plugin_paths_are_rejected(self):
+        self.save(dict(plugins=[str(self.root), str(self.root / 'unused' / '..')]))
+        self.rejects(['--profile', 'sample', 'up'], 'Duplicate plugin path')
+
+    def test_invalid_plugin_lists_are_rejected(self):
+        for value in (None, 'path', {}, [None], [42], [True], [''], [' '], [['path']], ['relative']):
+            with self.subTest(value=value):
+                self.save(dict(plugins=value))
+                self.rejects(['--profile', 'sample', 'up'], 'error:')
 
     def test_registry_inside_public_repo_is_rejected(self):
         with patch.object(dsh, 'profiles_path', return_value=dsh.ROOT / 'profiles.json'):

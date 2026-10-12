@@ -2,7 +2,7 @@
 FROM node:24-bookworm-slim AS node
 FROM ubuntu:24.04
 COPY --from=node /usr/local/ /usr/local/
-ARG DSH_VERSION=0.1.5-rc.3
+ARG DSH_VERSION=0.2.1-alpha.2
 RUN apt-get update && apt-get install -y --no-install-recommends \
       bash ca-certificates curl wget git python3 ripgrep socat libstdc++6 libatomic1 \
     && rm -rf /var/lib/apt/lists/* \
@@ -16,6 +16,7 @@ RUN useradd --create-home --uid 10001 --shell /bin/bash agent \
     && mkdir -p /workspace /opt/dsh \
     && chown agent:agent /workspace
 COPY scripts/start-dsh.sh /opt/dsh/start-dsh.sh
+COPY scripts/plugin-runtime.mjs /opt/dsh/plugin-runtime.mjs
 COPY scripts/git_transfer.py scripts/workspace.py /opt/dsh/
 RUN chmod 0555 /opt/dsh/start-dsh.sh
 ENV HOME=/home/agent DSH_HOME=/home/agent/.dsh DSH_PERMISSION_MODE=danger-full-access

@@ -20,7 +20,7 @@ absolute paths; Windows paths can use forward slashes:
 ```json
 {
   "my-project": {
-    "plugin": "/private/my-project/.dsh-plugin",
+    "plugins": ["/private/my-project/.dsh-plugin"],
     "repo": "/private/my-project",
     "name": "my-project-sandbox",
     "port": 11127,
@@ -29,11 +29,12 @@ absolute paths; Windows paths can use forward slashes:
 }
 ```
 
-All five fields are optional. The parser rejects other fields.
+All fields are optional. The parser rejects other fields.
 
 | Field | Meaning |
 | --- | --- |
-| `plugin` | Directory following the [plugin contract](plugins.md). Selecting it trusts its code. |
+| `plugins` | Ordered list of directories following the [plugin contract](plugins.md). Selecting them trusts their code. An empty list selects no plugins. |
+| `plugin` | Legacy single directory, normalized to a one-element `plugins` list. Mutually exclusive with `plugins`, even when the list is empty. |
 | `repo` | Default host repository for transfers. |
 | `name` | Persistent sandbox namespace for `dsh.py`. Tasks generate their own names. |
 | `port` | Localhost web port, an integer from 1 to 65535. |
@@ -41,6 +42,41 @@ All five fields are optional. The parser rejects other fields.
 
 Paths must be absolute or start with `~`; the working directory doesn't affect
 them. See [authentication](isolation.md#authentication) for key-file requirements.
+Plugin entries must be nonempty strings. Duplicate paths are rejected after
+expansion and resolution, including alternate spellings of the same directory.
+Every selected plugin directory and its manifest paths must exist before Docker
+operations begin.
+
+## Composing capabilities
+
+A profile can combine reusable capabilities with project-specific configuration:
+
+```json
+{
+  "omnigame": {
+    "plugins": [
+      "/plugins/dotnet",
+      "/plugins/rea",
+      "/projects/omnigame/.dsh-plugin"
+    ],
+    "repo": "/projects/omnigame"
+  }
+}
+```
+
+These paths illustrate a capability stack; this repository does not ship .NET or
+REA integrations. Build layers, Cordis patches, bootstrap hooks, and validation
+hooks follow this exact order. Plugins without a given contribution are skipped.
+Runtime directories remain separate and read-only. Environment keys and resource
+limits may agree or contribute different keys; incompatible values fail with
+both plugin paths and the conflicting field. Cordis IDs must be unique, and
+different plugins cannot replace the same entry field with incompatible values.
+See [composition rules](plugins.md#composition) for the complete contract.
+
+Existing `"plugin": "/old/plugin"` profiles require no edit. To migrate, replace
+that field with `"plugins": ["/old/plugin"]`; never leave both fields present.
+This is containerize-dsh's saved-profile feature. It does not select or replace
+DSH's own native profile; the container still starts `dsh web`.
 
 ## Starting tasks
 
@@ -49,12 +85,13 @@ dsh-task start --task fix-parser --profile my-project --open
 dsh-task start --task another-fix --profile my-project --repo /another/checkout --port 11128
 ```
 
-Explicit `--repo` and `--port` override saved values. Task startup takes `plugin`
+Explicit `--repo` and `--port` override saved values. Task startup takes `plugins`
 and `key_file` from the profile and replaces `name` with a unique task namespace.
 Task plugins must use the task's own home/workspace volumes; shared or external
 volume overrides fail validation.
 
-Later task commands use settings recorded at startup, so pass the task ID rather
+Task creation records the fully resolved, ordered plugin paths alongside other
+startup settings. Later task commands use those records, so pass the task ID rather
 than the profile name. Editing a profile won't change an existing task's saved
 settings. The referenced plugin files and key file still need to be available.
 
@@ -71,7 +108,9 @@ python dsh.py --profile my-project status --repo /another/host-checkout
 ```
 
 Select the profile on each invocation. Explicit CLI values override any saved
-field, even when the value equals a built-in default. A saved `repo` supplies the
+field, even when the value equals a built-in default. The singular `--plugin PATH`
+option replaces the entire saved plugin list with that one selection; it remains
+a singular option. A saved `repo` supplies the
 default for `init`, `refresh`, `import`, and `status`. Follow the
 [launcher setup sequence](launcher.md#setup) when using a new namespace.
 

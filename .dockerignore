@@ -2,5 +2,7 @@
 !Dockerfile
 !scripts/
 !scripts/start-dsh.sh
+!scripts/plugin-runtime.mjs
+!scripts/patch-dsh.py
 !scripts/git_transfer.py
 !scripts/workspace.py
