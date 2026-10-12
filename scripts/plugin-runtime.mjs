@@ -10,6 +10,7 @@ export function checkPatches(sources) {
   const ids = new Map();
   const claims = new Map();
   const rows = new Map();
+  const tree = [];
   const appends = new Map();
   const conflict = (first, second, contribution) => {
     throw new Error(`Plugins ${first} and ${second} conflict on Cordis ${contribution}.`);
@@ -30,8 +31,8 @@ export function checkPatches(sources) {
     owners.add(plugin);
     appends.set(id, owners);
   };
-  const insert = (entries, plugin) => {
-    for (const entry of entries) {
+  const insert = (entries, plugin, indexed = true) => {
+    return entries.map(entry => {
       if (entry.id) {
         const owner = ids.get(entry.id);
         if (owner && owner !== plugin) conflict(owner, plugin, `inserted id ${entry.id}`);
@@ -41,18 +42,27 @@ export function checkPatches(sources) {
           if (key !== 'id' && !(key === 'config' && entry.group)) claim(`${entry.id}.${key}`, value, plugin);
         }
       }
-      rows.set(entry.id || Symbol(), { ...entry, plugin });
+      const row = { ...entry, plugin };
+      if (indexed && entry.id) rows.set(entry.id, row);
       if (entry.group && Array.isArray(entry.config)) {
         if (entry.id) append(entry.id, plugin);
-        insert(entry.config, plugin);
+        row.config = insert(entry.config, plugin, indexed);
       }
-    }
+      return row;
+    });
   };
   for (const { plugin, patches } of sources) {
     for (const patch of patches) {
       if (Array.isArray(patch.insert)) {
         if (patch.id) append(patch.id, plugin);
-        insert(patch.insert, plugin);
+        const target = rows.get(patch.id);
+        const inserted = insert(patch.insert, plugin);
+        if (target?.group) {
+          if (!Array.isArray(target.config)) target.config = [];
+          target.config.push(...inserted);
+        } else {
+          tree.push(...inserted);
+        }
       } else if (patch.id) {
         // Upstream replaces whole entry fields, including config; it does not deep-merge them.
         for (const [key, value] of Object.entries(patch)) {
@@ -65,20 +75,29 @@ export function checkPatches(sources) {
         }
         const row = rows.get(patch.id);
         if (row) {
+          const wasGroup = row.group;
           for (const [key, value] of Object.entries(patch)) {
             if (key !== 'id' && key !== 'name') row[key] = value;
+          }
+          if (row.group && Array.isArray(row.config) && ('config' in patch || !wasGroup)) {
+            // Upstream replaces children without indexing them for later ID patches.
+            row.config = insert(row.config, plugin, false);
           }
         }
       }
     }
   }
   const servers = new Map();
-  for (const { plugin, name, config } of rows.values()) {
-    if (name !== '@deepseek-ai/dsh-mcp-client' || typeof config?.serverName !== 'string') continue;
-    const owner = servers.get(config.serverName);
-    if (owner && owner !== plugin) conflict(owner, plugin, `MCP serverName ${config.serverName}`);
-    servers.set(config.serverName, plugin);
-  }
+  const visit = entries => {
+    for (const { plugin, name, config, group } of entries) {
+      if (group && Array.isArray(config)) visit(config);
+      if (name !== '@deepseek-ai/dsh-mcp-client' || typeof config?.serverName !== 'string') continue;
+      const owner = servers.get(config.serverName);
+      if (owner && owner !== plugin) conflict(owner, plugin, `MCP serverName ${config.serverName}`);
+      servers.set(config.serverName, plugin);
+    }
+  };
+  visit(tree);
 }
 
 function runtimes() {

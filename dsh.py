@@ -195,8 +195,12 @@ def compose_plugins(core, contributions):
                 if key == 'tmpfs':
                     value = sorted(value)
                 assign(('services', 'dsh', key), value, plugin)
-        for key, definition in (raw.get('volumes') or {}).items():
-            if definition or config['volumes'][key] != core['volumes'][key]:
+        supplied_volumes = raw.get('volumes') or {}
+        # Standalone Compose rendering can prune definitions only the core mounts use.
+        keys = supplied_volumes.keys() | {
+            key for key in config['volumes'] if config['volumes'][key] != core['volumes'][key]}
+        for key in sorted(keys):
+            if supplied_volumes.get(key) or config['volumes'][key] != core['volumes'][key]:
                 assign(('volumes', key), config['volumes'][key], plugin)
     if result['volumes']['home']['name'] == result['volumes']['workspace']['name']:
         owners = [claims[('volumes', key)][0] for key in ('home', 'workspace')]

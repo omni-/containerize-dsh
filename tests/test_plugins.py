@@ -86,6 +86,34 @@ class ComposeCompositionTests(unittest.TestCase):
             dsh.compose_plugins(self.core, [self.contribution('/one', volumes={'home': {'name': 'shared'}}),
                                            self.contribution('/two', volumes={'workspace': {'name': 'shared'}})])
 
+    def test_pruned_volume_overrides_preserve_migration_definitions(self):
+        volumes = {'home': {'name': 'existing-home', 'external': True},
+                   'workspace': {'name': 'existing-workspace', 'external': True}}
+        name, raw, config = self.contribution('/migration', volumes=volumes)
+        # Standalone Compose rendering drops volumes absent from the service's mounts.
+        raw.pop('volumes')
+        result = dsh.compose_plugins(self.core, [(name, raw, config)])
+        self.assertEqual(result['volumes'], volumes)
+        self.assertEqual(self.core, core_config())
+
+    def test_pruned_volume_overrides_still_detect_conflicts(self):
+        contributions = []
+        for name, volume in (('/one', 'first'), ('/two', 'second')):
+            plugin, raw, config = self.contribution(name, volumes={'home': {'name': volume}})
+            raw.pop('volumes')
+            contributions.append((plugin, raw, config))
+        with self.assertRaisesRegex(ValueError, '/one and /two.*volumes.home'):
+            dsh.compose_plugins(self.core, contributions)
+
+    def test_pruned_volume_overrides_still_require_separate_volumes(self):
+        contributions = []
+        for name, kind in (('/one', 'home'), ('/two', 'workspace')):
+            plugin, raw, config = self.contribution(name, volumes={kind: {'name': 'shared'}})
+            raw.pop('volumes')
+            contributions.append((plugin, raw, config))
+        with self.assertRaisesRegex(ValueError, '/one and /two.*separate volumes'):
+            dsh.compose_plugins(self.core, contributions)
+
     def test_each_override_is_validated_before_composition(self):
         with self.assertRaisesRegex(ValueError, 'isolation'):
             dsh.compose_plugins(self.core, [self.contribution('/one', {'read_only': False}),
