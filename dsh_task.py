@@ -15,7 +15,10 @@ import uuid
 import webbrowser
 
 import dsh
-from git_transfer import git, bundle_refs
+from git_transfer import (git, commit, bundle_refs, module_refs, collect_modules,
+                          fetch_objects, preservation_ref)
+from task_integration import (prepare_modules, apply_changes, dirty, repositories,
+                              install_objects, update_checkouts)
 
 
 def state_root():
@@ -108,21 +111,12 @@ def owned(task, allow_missing=False):
                 raise ValueError('An unrecorded container uses a task volume; refusing to change it')
 
 
-# Run using the existing image helpers; old built images remain usable.
+# Use the same recursive snapshot and audit rules as workspace export.
 AUDIT = '''import sys,json
 sys.path.insert(0,"/opt/dsh")
-from git_transfer import git,commit
+from workspace import audit
 from pathlib import Path
-r=Path("/workspace")
-w,_=commit(r,snapshot=True,untracked=True)
-if any(line.startswith("160000 ") for line in git(r,"ls-tree","-r",w).splitlines()):
-    raise ValueError("Nested repositories/submodules need separate preservation before task export or cleanup")
-print(json.dumps(dict(base=git(r,"rev-parse","refs/dsh/base"),
-host=git(r,"rev-parse","refs/dsh/host"),head=git(r,"rev-parse","HEAD"),
-tree=git(r,"rev-parse",w+"^{tree}"),index=git(r,"write-tree"),
-new=git(r,"diff","--name-only","--diff-filter=A","HEAD",w),
-ignored=git(r,"ls-files","--others","--ignored","--exclude-standard"),
-refs=git(r,"for-each-ref","--format=%(objectname)").splitlines())))
+print(json.dumps(audit(Path("/workspace"))))
 '''
 
 
@@ -151,6 +145,10 @@ def export_task(directory, task, box, include_untracked=False):
         raise ValueError(f'Workspace changed during export; bundle retained at {bundle}')
     review = dict(revision=refs['work'][0], branch=branch, bundle=str(bundle),
                   sha256=hashlib.sha256(bundle.read_bytes()).hexdigest(), audit=before)
+    modules = module_refs(refs)
+    if modules:
+        review['submodules'] = {path: {kind: value[0] for kind, value in values.items()}
+                                for path, values in modules.items()}
     task.setdefault('reviews', []).append(review)
     save(directory, task)
     return review
@@ -169,6 +167,10 @@ def latest(task):
             or refs['host'][0] != task['transfer_host']
             or git(repo, 'rev-parse', review['branch']) != review['revision']):
         raise ValueError('Review refs no longer match the recorded export')
+    for key, (oid, _) in refs.items():
+        if key.startswith('modules/') and git(repo, 'rev-parse',
+                preservation_ref(review['branch'], key)) != oid:
+            raise ValueError('Submodule review refs no longer match the recorded export')
     return review
 
 
@@ -195,20 +197,18 @@ def prepare(directory, task):
                     review=review['revision'], status='preparing')
     task.setdefault('integrations', []).append(prepared)
     save(directory, task)
-    # Strict patch application deliberately refuses baseline-dependent conflicts.
-    # Never cherry-pick the synthetic base or merge its ancestry into the target.
-    patch = subprocess.run(['git', '-C', str(repo), 'diff', '--binary', '--full-index',
-                            '--no-ext-diff', '--no-textconv', task['base'], review['revision']],
-                           check=True, capture_output=True).stdout
-    if patch:
-        result = subprocess.run(['git', '-C', str(work), 'apply', '--index', '--binary', '-'],
-                                input=patch, capture_output=True)
-        if result.returncode:
-            prepared['status'] = 'blocked'
-            save(directory, task)
-            raise ValueError('Agent-only patch conflicts or needs the dirty baseline. Prepared worktree: '
-                             + str(work) + '\n' + result.stderr.decode(errors='replace'))
-        git(work, '-c', 'core.hooksPath=' + os.devnull, 'commit', '-m', 'Integrate DSH task ' + task['id'])
+    refs = bundle_refs(repo, review['bundle'], {'base', 'host', 'work'})
+    try:
+        prepare_modules(repo, work, target, refs, branch)
+        apply_changes(repo, work, task['base'], review['revision'], 'Integrate DSH task ' + task['id'])
+        for key, (module, oid) in collect_modules(work, dict(prepared=git(work, 'rev-parse', 'HEAD'))).items():
+            fetch_objects(repo, module, oid)
+            git(repo, 'update-ref', preservation_ref(branch, key), oid)
+    except (ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+        prepared['status'] = 'blocked'
+        save(directory, task)
+        raise ValueError('Agent-only patch conflicts or needs the dirty baseline. Prepared worktree: '
+                         + str(work) + '\n' + str(error)) from error
     prepared['revision'] = git(work, 'rev-parse', 'HEAD')
     prepared['status'] = 'prepared'
     save(directory, task)
@@ -222,16 +222,18 @@ def finalize(directory, task, checks):
     work = Path(prepared['worktree'])
     if (prepared['status'] != 'prepared' or prepared['review'] != review['revision']
             or git(work, 'rev-parse', 'HEAD') != prepared['revision']
-            or git(work, 'status', '--porcelain')):
+            or dirty(work)):
         raise ValueError('Prepared revision changed; review and prepare again')
     # Use the original checkout only when it still owns the intended target.
     if (git(repo, 'symbolic-ref', '--short', 'HEAD') != task['target']
             or git(repo, 'rev-parse', 'HEAD') != prepared['target_head']
-            or git(repo, 'status', '--porcelain')):
+            or dirty(repo)):
         raise ValueError('Target moved, is dirty, or is checked out elsewhere; prepared branch retained. Integration is incomplete.')
     report = evidence(directory, checks, 'checks')
+    install_objects(repo, work, prepared['revision'])
     git(repo, '-c', 'core.hooksPath=' + os.devnull, 'merge', '--ff-only',
         '--no-autostash', '--no-overwrite-ignore', prepared['revision'])
+    update_checkouts(repo, work, prepared['revision'], prepared['target_head'])
     prepared.update(status='integrated', checks=report)
     task['integrated'] = dict(review=review['revision'], revision=prepared['revision'])
     save(directory, task)
@@ -254,9 +256,15 @@ def cleanup(directory, task, box, require_integrated=False):
         if not work.is_relative_to(directory.resolve()) or work == directory.resolve():
             raise ValueError('Integration worktree is outside task state')
         if work.exists():
-            if (identity(work) != task['repository'] or git(work, 'status', '--porcelain', '--ignored')
+            if (identity(work) != task['repository'] or dirty(work, ignored=True)
                     or git(work, 'rev-parse', 'HEAD') != prepared.get('revision')):
                 raise ValueError('Integration worktree has unpreserved changes; retain it: ' + str(work))
+            for name, module in repositories(work):
+                if name:
+                    for oid in git(module, 'for-each-ref', '--format=%(objectname)').splitlines():
+                        if not git(host(task), 'for-each-ref', '--contains', oid,
+                                   '--format=%(refname)', 'refs/dsh-submodules'):
+                            raise ValueError(f'Integration submodule has unpreserved refs: {name}')
             removable.append(work)
     owned(task, allow_missing=task.get('cleanup_verified', False))
     names = docker_list('volume', 'ls', '--format', '{{.Name}}')
@@ -269,6 +277,22 @@ def cleanup(directory, task, box, require_integrated=False):
             raise ValueError('Ignored files are not in the bundle; archive them outside the checkout before cleanup:\n' + current['ignored'])
         for oid in current['refs']:
             git(host(task), 'merge-base', '--is-ancestor', oid, review['revision'])
+        modules = module_refs(bundle_refs(host(task), review['bundle'], {'base', 'host', 'work'}))
+        for path, state in current.get('submodules', {}).items():
+            values = modules.get(path, {})
+            if not values or (not state.get('retired') and 'work' not in values):
+                raise ValueError(f'Submodule is not preserved in the export: {path}')
+            if state.get('retired') and (state['worktree'] or state['index'] != state['tree']):
+                raise ValueError(f'Removed submodule has unpreserved files or index contents: {path}')
+            for oid in state['refs']:
+                for candidate, _ in values.values():
+                    try:
+                        git(host(task), 'merge-base', '--is-ancestor', oid, candidate)
+                    except RuntimeError:
+                        continue
+                    break
+                else:
+                    raise ValueError(f'Submodule has unpreserved refs: {path} ({oid})')
         task['cleanup_verified'] = True
         save(directory, task)
         # Remove only the recorded container. Preserve home, networks, images and caches.
@@ -280,7 +304,8 @@ def cleanup(directory, task, box, require_integrated=False):
         owned(task)
         dsh.run('docker', 'volume', 'rm', task['volumes']['workspace'])
     for work in removable:
-        git(host(task), 'worktree', 'remove', work)
+        options = ['--force', '--force'] if len(list(repositories(work))) > 1 else []
+        git(host(task), 'worktree', 'remove', *options, work)
     task['cleaned'] = True
     save(directory, task)
 
@@ -338,6 +363,8 @@ def start(args):
     task_id += '-' + uuid.uuid4().hex
     target = args.target or git(repo, 'symbolic-ref', '--short', 'HEAD')
     git(repo, 'show-ref', '--verify', 'refs/heads/' + target)
+    base, source = commit(repo, args.revision, args.snapshot, args.include_untracked)
+    collect_modules(repo, dict(base=base, host=source))
     root = state_root().resolve()
     if root.is_relative_to(repo) or root.is_relative_to(dsh.ROOT):
         raise ValueError('Task state must be outside repositories')

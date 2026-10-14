@@ -20,7 +20,7 @@ Nothing copies plugin files into public Git state.
 
 | Contribution | Convention |
 | --- | --- |
-| Derived image / build additions | `build` invokes Docker with `DSH_BASE_IMAGE` set to the preceding derived image, or `dsh-sandbox:local` for the first build. Use a global `ARG DSH_BASE_IMAGE` then `FROM ${DSH_BASE_IMAGE}`; install dependencies as root at build time and end with `USER 10001:10001`. Preserve the core home, workspace, helpers and startup. |
+| Derived image / build additions | `build` invokes Docker with `DSH_BASE_IMAGE` set to the preceding derived image, or `dsh-sandbox:local` for the first build. Use a global `ARG DSH_BASE_IMAGE=dsh-sandbox:local` then `FROM ${DSH_BASE_IMAGE}`; the valid default avoids Docker's `InvalidDefaultArgInFrom` warning. Install dependencies as root at build time and end with `USER 10001:10001`. Preserve the core home, workspace, helpers and startup. |
 | Runtime files | `runtime` is mounted as a **directory**, read-only at `/opt/dsh-plugin` for the first selected plugin, and `/opt/dsh-plugins/2`, `/opt/dsh-plugins/3`, etc. for later selections. Put only agent-readable configuration/scripts here; no host checkout, `.git`, credentials or unrelated files. |
 | Cordis/MCP | Each optional `runtime/cordis.yml` is passed as a separate `dsh web --patch`, in selection order, on each start. It is a DSH Cordis patch list, not a separate core format. MCP executable paths and cwd refer to the container. Relative inserted plugin module names are anchored by DSH to their own patch file. |
 | Bootstrap | Optional `runtime/bootstrap.sh` runs with `/bin/sh`, as UID 10001, in `/workspace`, before DSH starts. A nonzero result fails startup. Make it idempotent; write only to home, workspace or tmp. |

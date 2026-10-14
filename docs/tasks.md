@@ -61,6 +61,10 @@ state. New, uncommitted files require `--include-untracked`, even if staged.
 Each export gets its own bundle and review ref, so another export leaves older
 reviews recoverable.
 
+Export includes registered submodules recursively, with the same opt-in for new
+files inside them. The review record lists their starting and exported commits
+so their diffs can be reviewed from the host repository.
+
 Review the diff from the manifest's `base` to the exported `revision`. Record your
 findings in a nonempty file and pass that exact revision to `reviewed`. Keep this
 report and the later checks report outside the host and integration worktrees.
@@ -85,6 +89,11 @@ base to the reviewed revision. It commits a nonempty diff as one integration
 commit with Git hooks disabled. An empty diff leaves the target commit as the
 prepared revision. This keeps a synthetic baseline's ancestry out of the target.
 
+For changed submodules, preparation creates independent checkouts in that worktree and
+applies the agent's changes separately in each repository. It commits those
+changes from the target's submodule revisions, then updates the parent gitlinks.
+Edits supplied in the initial snapshot stay out of the integrated submodule trees.
+
 Preparation starts from the target branch's current commit, so unrelated host
 advances since task startup can coexist with the agent's change. A patch conflict,
 including one caused by missing baseline edits, leaves a worktree and a `blocked`
@@ -99,6 +108,13 @@ revision. The original host checkout must own the intended target branch, be
 clean, and remain at the commit used for preparation. A failure leaves integration
 incomplete and keeps the prepared branch. The merge uses fast-forward only, with
 hooks disabled, no autostash, and protection against overwriting ignored files.
+Submodule histories are loaded locally, and finalization updates their checkouts
+with network fetching disabled. Dirty submodules and ignored-file collisions
+block finalization before the target branch advances.
+Unchanged, uninitialized dependencies stay uninitialized on the host; their
+objects remain preserved. Changing a submodule requires a prepared checkout,
+so dependencies with filenames unsupported by the host need integration on a
+compatible system.
 
 Reports document verification by a person or host agent. The launcher requires
 nonempty reports; it doesn't interpret the findings or run project tests.

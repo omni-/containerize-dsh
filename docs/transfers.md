@@ -32,6 +32,18 @@ travel when HEAD already tracks them. The temporary index captures the final fil
 contents, not the staged/unstaged split. Stop editing the host while taking a
 snapshot; this isn't an atomic filesystem snapshot.
 
+These rules apply recursively to registered submodules. Revision transfers use
+the submodule commits pinned by the selected parent commit. Snapshots instead
+capture each initialized submodule's current HEAD and working files, including
+nested submodules. Each repository gets its own temporary index, so its host
+branch, real index, and working files remain unchanged.
+
+The same bundle carries all selected submodule histories and snapshots. Workspace
+initialization restores independent submodule checkouts from those objects;
+it does not fetch URLs from `.gitmodules`. Make the required commits available
+locally before starting, usually with `git submodule update --init --recursive`.
+Missing local submodule repositories fail startup before task resources are created.
+
 Review the selected files and history for secrets before transferring them. See
 the [isolation model](isolation.md) for what the agent can access.
 
@@ -81,6 +93,13 @@ creates a new local branch under `dsh/review-` and prints its name, the source h
 commit, and the DSH base. It leaves the host branch and working files alone and
 refuses to overwrite an existing branch. Nothing merges or pushes automatically.
 
+Submodule histories are preserved under `refs/dsh-submodules/` in the destination
+repository, without moving existing submodule checkouts or indexes. Recorded
+review exports also list each submodule's `base`, `host`, and `work` commits in
+the manifest. To review a submodule, run `git diff <submodule-base>
+<submodule-work>` from the main repository; the imported objects are available
+there, including for nested submodules.
+
 Before fetching objects, import requires the bundle's recorded host commit to
 already exist in the destination. An unrelated repository without that commit
 fails the check. The destination can have a newer HEAD, local edits, or a linked
@@ -101,15 +120,16 @@ The task integration workflow instead applies the combined base-to-review diff.
 ## Repository limits
 
 Bundles include selected commit history and historical file contents. Keep them
-private. They omit untracked ignored artifacts, Git LFS object payloads, and
-submodule repositories. Revision transfers carry submodule gitlinks only;
-snapshot mode rejects indexed submodules. Task audits also reject gitlinks and
-nested repositories that would enter the snapshot, so use the low-level launcher
-for revision-only transfers involving submodules.
+private. They omit untracked ignored artifacts and Git LFS object payloads.
+Registered submodule repositories are transferred recursively. Unregistered
+embedded repositories are refused rather than exported as incomplete gitlinks.
+Task audits include submodule indexes, refs, new files, and ignored files;
+cleanup requires the same preservation checks in every repository.
 
-Supply missing dependencies separately through a private plugin. Transfer one
-repository at a time, using a complete source clone: shallow history can produce
-prerequisite-dependent bundles that fail verification.
+Supply ignored artifacts and LFS payloads separately through a private plugin.
+Use complete source clones, including the submodules: shallow history can produce
+prerequisite-dependent bundles that fail verification. Rebuild cached core and
+plugin images with `dsh-task start ... --rebuild` after updating these helpers.
 
 For `init`, `refresh`, workspace status, and the underlying `dsh.py` transfer
 commands, see the [launcher reference](launcher.md#workspace-transfers).

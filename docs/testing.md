@@ -38,6 +38,7 @@ Once `dsh-sandbox:local` is cached, run the task smoke test:
 ```sh
 python tests/task_docker_smoke.py
 python tests/task_docker_smoke.py --discard
+python tests/submodules_docker_smoke.py
 ```
 
 The first exercises startup, browser URL retrieval, repeated review exports,
@@ -49,6 +50,12 @@ Both use a temporary registry, a synthetic repository, and an available localhos
 port. They clear the provider key, refuse image builds, and make no model calls.
 Their final teardown removes only their recorded fixture containers, networks,
 and volumes, including the fixture home volume after checking its preservation.
+
+The submodule smoke test uses nested local repositories and fresh Compose volumes.
+It checks recursive snapshots and audits, repeated exports, file-selection and
+cleanup guards, agent-only integration, offline submodule finalization, and home
+retention. It starts only maintenance containers and makes no model requests.
+Use `--image TAG` to test updated helpers in a separate image.
 
 The plugin composition smoke test builds two synthetic derived layers, starts a
 saved-profile task, and verifies separate runtime mounts, per-plugin Compose

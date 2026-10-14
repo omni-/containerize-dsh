@@ -15,7 +15,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / 'scripts'))
-from git_transfer import git, commit, make_bundle, bundle_refs
+from git_transfer import git, commit, make_bundle, bundle_refs, validate_modules, preservation_ref
 
 
 def run(*args, capture=False, env=None):
@@ -364,9 +364,13 @@ def transfer(sandbox, args):
             raise ValueError('Bundle host commit is not already present in the destination repository.')
         # Fetch only objects first, then atomically create a new branch (never overwrite).
         git(repo, '-c', 'core.hooksPath=' + os.devnull, 'fetch', '--no-tags', '--no-write-fetch-head',
-            bundle, *[value[1] for value in refs.values()])
+            '--recurse-submodules=no', bundle, *[value[1] for value in refs.values()])
+        validate_modules(repo, refs)
         git(repo, 'merge-base', '--is-ancestor', refs['base'][0], refs['work'][0])
-        git(repo, 'update-ref', f'refs/heads/{branch}', refs['work'][0], '0' * len(refs['work'][0]))
+        updates = [f'create refs/heads/{branch}\0{refs["work"][0]}\0']
+        updates += [f'create {preservation_ref(branch, key)}\0{value[0]}\0'
+                    for key, value in refs.items() if key.startswith('modules/')]
+        git(repo, 'update-ref', '--stdin', '-z', input='start\0' + ''.join(updates) + 'prepare\0commit\0')
         print(f'Review branch: {branch}\nHost source: {refs["host"][0]}\nDSH base: {refs["base"][0]}')
         print(f'Agent-only diff: git diff {refs["base"][0]} {branch}')
         return
