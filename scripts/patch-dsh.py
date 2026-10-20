@@ -1,4 +1,4 @@
-"""Workspace default for the directory browser in pinned DSH 0.2.1-alpha.2.
+"""Workspace default for the directory browser in pinned DSH 0.2.1-rc.2.
 
 Session creation already defaults to process.cwd(), but the directory browser
 defaults to homedir() and has no configuration for its initial directory.

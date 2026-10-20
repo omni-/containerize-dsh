@@ -70,12 +70,12 @@ through a [saved profile](docs/profiles.md). Install them at image build time;
 the running agent cannot use apt against the read-only root filesystem.
 New sessions and the browser's initial directory default to `/workspace`; home
 remains `/home/agent` for credentials, history, and caches. DSH is pinned to
-`0.2.1-alpha.2`. This release still
+`0.2.1-rc.2`. This release still
 needs a small build-time directory-browser patch for this default; image builds
 fail if an upstream change makes that patch incompatible.
 Rebuild cached images after upgrading: use `dsh-task start ... --rebuild`, or
 `python dsh.py ... build` followed by `up`. Existing running tasks keep their
-original container image. See the [upgrade notes](docs/task-notes/dsh-0.2.1-alpha.2.md)
+original container image. See the [upgrade notes](docs/task-notes/dsh-0.2.1-rc.2.md)
 for upstream configuration and native-plugin compatibility changes.
 
 To send your current edits instead of committed `HEAD`, add `--snapshot`.

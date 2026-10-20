@@ -107,7 +107,7 @@ def main():
                 assert task['resolved']['plugins'] == list(map(str, paths))
                 assert f'http://127.0.0.1:{port}/?token=' in output.getvalue(), 'Web URL not ready'
                 cid = task['container']
-                assert dsh.run('docker', 'exec', cid, 'dsh', '--version', capture=True) == '0.2.1-alpha.2'
+                assert dsh.run('docker', 'exec', cid, 'dsh', '--version', capture=True) == '0.2.1-rc.2'
                 info = json.loads(dsh.run('docker', 'inspect', cid, capture=True))[0]
                 assert info['HostConfig']['ReadonlyRootfs'] and info['Config']['User'] == '10001:10001'
                 assert info['HostConfig']['CapDrop'] == ['ALL']
@@ -209,7 +209,7 @@ def main():
                     else:
                         raise AssertionError('Stack-resetting Dockerfile accepted')
                 dockerfile.write_text(original, newline='\n')
-                print('PASS: DSH 0.2.1-alpha.2 web/headless, ordered image/runtime/Cordis/MCP/hooks, Compose/build conflicts, isolation, and saved task stability.')
+                print('PASS: DSH 0.2.1-rc.2 web/headless, ordered image/runtime/Cordis/MCP/hooks, Compose/build conflicts, isolation, and saved task stability.')
             finally:
                 # Delete only resources in this unique fixture namespace, even after failed startup.
                 if task is None:
