@@ -1,5 +1,5 @@
 // Use the pinned Harness parser, including !!js and relative plugin module names.
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync, unlinkSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -117,8 +117,64 @@ async function check(selected) {
   checkPatches(sources);
 }
 
+export function modelPatch(entries, model, effort) {
+  const rows = entries.flatMap(function walk(entry) {
+    return [entry, ...(entry.group && Array.isArray(entry.config) ? entry.config.flatMap(walk) : [])];
+  });
+  const matches = rows.filter(entry => entry.id === 'agent-default-model');
+  if (matches.length !== 1 || !matches[0].config?.provider || !matches[0].config?.model) {
+    throw new Error('Cannot resolve the composed agent-default-model configuration.');
+  }
+  // Cordis replaces the entire config: retain the composed provider/model/effort unless overridden.
+  const config = { ...matches[0].config };
+  if (model) {
+    const slash = model.indexOf('/');
+    if (slash >= 0) {
+      if (!model.slice(0, slash).trim() || !model.slice(slash + 1).trim()) {
+        throw new Error('Model must be a model id or provider/model.');
+      }
+      config.provider = model.slice(0, slash);
+      config.model = model.slice(slash + 1);
+    } else {
+      config.model = model;
+    }
+  }
+  if (effort) config.reasoningEffort = effort;
+  return [{ id: 'agent-default-model', config }];
+}
+
+async function headlessModel(selected) {
+  const args = ['--profile', 'headless', '--dump-config'];
+  for (const { runtime } of selected) {
+    const file = join(runtime, 'cordis.yml');
+    if (existsSync(file)) args.push('--patch', file);
+  }
+  // A config dump mounts no agent and reads no prompt. Never send it to logs: plugins may contain secrets.
+  const result = spawnSync('dsh', args, {
+    stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) throw new Error('Cannot read the headless configuration.');
+  const file = '/tmp/dsh-headless-config.yml';
+  try {
+    writeFileSync(file, result.stdout, { mode: 0o600 });
+    const require = createRequire('/usr/local/lib/node_modules/@deepseek-ai/dsh/package.json');
+    const { loadOverlayPatches } = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-app-boot')));
+    const entries = loadOverlayPatches('Headless configuration', file);
+    const patch = modelPatch(entries, process.env.DSH_HEADLESS_MODEL, process.env.DSH_HEADLESS_EFFORT);
+    writeFileSync('/tmp/dsh-headless-model.json', JSON.stringify(patch), { mode: 0o600 });
+  } catch {
+    throw new Error('Cannot generate the headless model configuration.');
+  } finally {
+    if (existsSync(file)) unlinkSync(file);
+  }
+}
+
 async function main(mode) {
   const selected = runtimes();
+  if (mode === 'headless-model') {
+    await headlessModel(selected);
+    return;
+  }
   if (mode === 'paths') {
     for (const { runtime } of selected) console.log(runtime);
     return;

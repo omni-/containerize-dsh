@@ -31,6 +31,9 @@ installed launcher from there.
 
 ### Review
 
+Headless tasks use the same export and review commands; `show` includes their
+outcome and event path, and `resume` opens their saved session in the web UI.
+
 Run:
 
 ```text

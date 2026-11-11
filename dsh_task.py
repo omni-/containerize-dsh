@@ -2,8 +2,10 @@
 """Host task bookkeeping around dsh.py; no host checkout is mounted in Docker."""
 import argparse
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -356,7 +358,8 @@ def show_url(box, port, open_browser=False):
     print('Browser is still starting. Retry: dsh-task url <task-id>')
 
 
-def start(args):
+@contextmanager
+def setup_task(args):
     profile = dsh.load_profile(args.profile) if args.profile is not None else {}
     repo = Path(git(args.repo or profile.get('repo') or Path.cwd(), 'rev-parse', '--show-toplevel')).resolve()
     task_id = re.sub('[^a-z0-9]+', '-', args.task.lower()).strip('-')[:40] or 'task'
@@ -369,7 +372,7 @@ def start(args):
     if root.is_relative_to(repo) or root.is_relative_to(dsh.ROOT):
         raise ValueError('Task state must be outside repositories')
     directory = root / task_id
-    resolved = dict(name='dsh-task-' + task_id, port=args.port or profile.get('port', 11111),
+    resolved = dict(name='dsh-task-' + task_id, port=getattr(args, 'port', None) or profile.get('port', 11111),
                     plugins=dsh.plugin_paths(profile.get('plugins', []), strict=True), key_file=profile.get('key_file'))
     if resolved['key_file']:
         resolved['key_file'] = str(Path(resolved['key_file']).resolve(strict=True))
@@ -395,11 +398,149 @@ def start(args):
         task['volume_created'] = {k: json.loads(dsh.run('docker', 'volume', 'inspect', v,
                                        capture=True))[0]['CreatedAt'] for k, v in task['volumes'].items()}
         save(directory, task)
+        yield directory, task, box
+
+
+def start(args):
+    with setup_task(args) as (directory, task, box):
         box.compose('up', '-d', '--no-build')
         task['container'] = box.compose('ps', '-aq', 'dsh', capture=True)
         task['container'] = json.loads(dsh.run('docker', 'inspect', task['container'], capture=True))[0]['Id']
         save(directory, task)
-        show_url(box, resolved['port'], args.open)
+        show_url(box, task['resolved']['port'], args.open)
+
+
+def read_prompt(path):
+    if path == '-':
+        content = sys.stdin.buffer.read()
+    else:
+        content = Path(path).read_bytes()
+    try:
+        text = content.decode('utf-8-sig')
+    except UnicodeError:
+        raise ValueError('Prompt must be UTF-8 text') from None
+    if not text.strip():
+        raise ValueError('Prompt must not be empty')
+    return content
+
+
+def read_outcome(path):
+    outcome = dict(session_id=None, final_reason=None, error=None)
+    last = None
+    with path.open('rb') as stream:
+        for line in stream:
+            try:
+                event = json.loads(line)
+                if not isinstance(event, dict) or not isinstance(event.get('type'), str):
+                    raise ValueError()
+            except (ValueError, UnicodeError):
+                outcome['error'] = 'Invalid headless event stream'
+                continue
+            last = event['type']
+            if last == 'session' and isinstance(event.get('sessionId'), str):
+                outcome['session_id'] = event['sessionId']
+            elif last == 'final':
+                reason = event.get('reason')
+                outcome['final_reason'] = None
+                if isinstance(reason, dict) and isinstance(reason.get('kind'), str):
+                    outcome['final_reason'] = reason['kind']
+            elif last == 'error':
+                message = event.get('message')
+                outcome['error'] = message if isinstance(message, str) and message else 'Headless runner failed'
+    if last != 'final' and not outcome['error']:
+        outcome['error'] = 'Headless stream ended without a final event'
+    return outcome
+
+
+def timestamp():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def stop_headless(task, process):
+    # Stop the container, not just its attached Docker client. Docker escalates after the grace period.
+    try:
+        owned(task)
+        dsh.run('docker', 'stop', '--time', '10', task['container'], capture=True)
+    finally:
+        try:
+            process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+
+def run_task(args):
+    prompt = read_prompt(args.prompt_file)
+    with setup_task(args) as (directory, task, box):
+        events = Path(args.events).expanduser().resolve() if args.events else directory / 'events.ndjson'
+        with events.open('xb') as output, tempfile.TemporaryFile() as source:
+            source.write(prompt)
+            source.seek(0)
+            print('Events:', events, flush=True)
+            outcome = dict(started_at=timestamp(), ended_at=None, exit_code=None,
+                           events=str(events), session_id=None, final_reason=None,
+                           error=None, timed_out=False, model=args.model, effort=args.effort)
+            task.update(headless=outcome, container_mode='headless')
+            save(directory, task)
+            process = None
+            try:
+                box.headless(args.model, args.effort)
+                box.compose('create', '--no-build', 'dsh')
+                cid = box.compose('ps', '-aq', 'dsh', capture=True)
+                info = json.loads(dsh.run('docker', 'inspect', cid, capture=True))[0]
+                task['container'] = info['Id']
+                # Resume and maintenance keep the image actually used, even if its tag is rebuilt.
+                task['resolved']['image'] = info['Image']
+                save(directory, task)
+                process = subprocess.Popen(['docker', 'start', '--attach', '--interactive', task['container']],
+                                           stdin=source, stdout=output, stderr=subprocess.DEVNULL)
+                try:
+                    process.wait(timeout=args.timeout)
+                except subprocess.TimeoutExpired:
+                    outcome['timed_out'] = True
+                    stop_headless(task, process)
+                except KeyboardInterrupt:
+                    outcome['error'] = 'Headless run interrupted'
+                    stop_headless(task, process)
+                info = json.loads(dsh.run('docker', 'inspect', task['container'], capture=True))[0]
+                if info['State']['Running']:
+                    outcome['error'] = 'Docker attachment ended before the headless container stopped'
+                    stop_headless(task, process)
+                    info = json.loads(dsh.run('docker', 'inspect', task['container'], capture=True))[0]
+                outcome['exit_code'] = info['State']['ExitCode']
+                if process.returncode != outcome['exit_code'] and not outcome['error']:
+                    outcome['error'] = 'Headless Docker client exited with code ' + str(process.returncode)
+            except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError):
+                outcome['error'] = 'Headless launch or container inspection failed'
+                if process is not None and process.poll() is None:
+                    stop_headless(task, process)
+            finally:
+                output.flush()
+                parsed = read_outcome(events)
+                outcome.update(session_id=parsed['session_id'], final_reason=parsed['final_reason'])
+                outcome['error'] = parsed['error'] or outcome['error']
+                outcome['ended_at'] = timestamp()
+                save(directory, task)
+        return 0 if (outcome['exit_code'] == 0 and outcome['final_reason'] == 'completed'
+                     and not outcome['error'] and not outcome['timed_out']) else 1
+
+
+def resume_headless(directory, task, box):
+    cid = task.get('container')
+    if cid:
+        dsh.run('docker', 'stop', cid, capture=True)
+        dsh.run('docker', 'rm', cid, capture=True)
+        task['container'] = None
+        save(directory, task)
+    box.compose('up', '-d', '--no-build', '--pull', 'never', 'dsh')
+    cid = box.compose('ps', '-aq', 'dsh', capture=True)
+    task['container'] = json.loads(dsh.run('docker', 'inspect', cid, capture=True))[0]['Id']
+    task['container_mode'] = 'web'
+    save(directory, task)
 
 
 def task_for_repository():
@@ -453,17 +594,26 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
     sub.add_parser('list', help='List all recorded tasks without contacting Docker')
-    child = sub.add_parser('start')
-    child.add_argument('--profile', help='Optional saved profile; otherwise use the current repository with no plugin')
-    child.add_argument('--task', required=True)
-    child.add_argument('--repo')
-    child.add_argument('--target')
-    child.add_argument('--port', type=int)
-    child.add_argument('--revision', default='HEAD')
-    child.add_argument('--snapshot', action='store_true')
-    child.add_argument('--include-untracked', action='store_true')
-    child.add_argument('--rebuild', action='store_true')
-    child.add_argument('--open', action='store_true')
+    for action in ('start', 'run'):
+        child = sub.add_parser(action)
+        child.add_argument('--profile', help='Optional saved profile; otherwise use the current repository with no plugin')
+        child.add_argument('--task', required=True)
+        child.add_argument('--repo')
+        child.add_argument('--target')
+        if action == 'start':
+            child.add_argument('--port', type=int)
+        child.add_argument('--revision', default='HEAD')
+        child.add_argument('--snapshot', action='store_true')
+        child.add_argument('--include-untracked', action='store_true')
+        child.add_argument('--rebuild', action='store_true')
+        if action == 'start':
+            child.add_argument('--open', action='store_true')
+        else:
+            child.add_argument('--prompt-file', required=True, help='UTF-8 task file, or - for stdin')
+            child.add_argument('--events', help='New host NDJSON file (default: task state directory)')
+            child.add_argument('--timeout', type=float, help='Maximum headless runtime in seconds')
+            child.add_argument('--model', help='Model id, optionally prefixed with provider/')
+            child.add_argument('--effort', help='Provider reasoning effort id')
     child = sub.add_parser('discard', help='Delete disposable container work without export or review',
         description='Permanently delete this task container and workspace, including uncommitted, '
                     'untracked and ignored files, without export/review/integration. '
@@ -503,11 +653,20 @@ def main(argv=None):
             parser.error('--include-untracked requires --snapshot with --bundle')
         if not args.task_id:
             args.task_id = task_for_repository()
-    if args.action == 'start':
+    if args.action in ('start', 'run'):
         if args.include_untracked and not args.snapshot:
             parser.error('--include-untracked requires --snapshot')
-        if args.port is not None and not 1 <= args.port <= 65535:
+        if getattr(args, 'port', None) is not None and not 1 <= args.port <= 65535:
             parser.error('Invalid port')
+        if args.action == 'run':
+            if args.timeout is not None and (not math.isfinite(args.timeout) or args.timeout <= 0):
+                parser.error('--timeout must be a finite positive number')
+            if any(value is not None and (not value.strip() or '\0' in value)
+                   for value in (args.model, args.effort)):
+                parser.error('--model and --effort must be nonempty strings without NUL characters')
+            if args.model and '/' in args.model and not all(part.strip() for part in args.model.split('/', 1)):
+                parser.error('--model must be a model id or provider/model')
+            return run_task(args)
         start(args)
         return
     with locked(args.task_id) as (directory, task):
@@ -550,12 +709,15 @@ def main(argv=None):
                 else:
                     owned(task)
                     if args.action == 'resume':
-                        box.compose('start')
+                        if task.get('container_mode') == 'headless':
+                            resume_headless(directory, task, box)
+                        else:
+                            box.compose('start')
                     show_url(box, task['resolved']['port'])
 
 
 if __name__ == '__main__':
     try:
-        main()
+        sys.exit(main())
     except (ValueError, RuntimeError, OSError, subprocess.CalledProcessError) as error:
         sys.exit(str(error))

@@ -229,7 +229,7 @@ class Sandbox:
         self.args = args
         self.env = os.environ.copy()
         # Do not load a repository .env or implicit compose overrides.
-        self.env.update(DSH_PORT=str(args.port), DSH_IMAGE='dsh-sandbox:local')
+        self.env.update(DSH_PORT=str(args.port), DSH_IMAGE=getattr(args, 'image', None) or 'dsh-sandbox:local')
         self.plugins = [Plugin(path) for path in plugin_paths(args.plugins, strict=True)]
         builders = [plugin for plugin in self.plugins if 'build' in plugin.manifest]
         if len(self.plugins) > 1:
@@ -244,8 +244,10 @@ class Sandbox:
             # Keep the established single-plugin image name; hash ordered prefixes for stacks.
             identity = str(plugin.directory) if len(self.plugins) == 1 else json.dumps([str(p.directory) for p in prefix])
             digest = hashlib.sha256(identity.encode()).hexdigest()[:12]
-            self.env['DSH_IMAGE'] = f'dsh-plugin:{digest}'
-            self.builds.append((plugin, self.env['DSH_IMAGE']))
+            image = f'dsh-plugin:{digest}'
+            self.builds.append((plugin, image))
+            if not getattr(args, 'image', None):
+                self.env['DSH_IMAGE'] = image
         extra = {'services': {'dsh': {}}}
         service = extra['services']['dsh']
         runtimes = []
@@ -307,6 +309,18 @@ class Sandbox:
 
     def compose(self, *args, capture=False):
         return run(*self.command, *args, capture=capture, env=self.env)
+
+    def headless(self, model=None, effort=None):
+        # Derive only from the already validated service, retaining every isolation setting.
+        config = json.loads(self.compose('config', '--format', 'json', capture=True))
+        service = config['services']['dsh']
+        service.pop('ports', None)
+        service.update(command=['/opt/dsh/start-dsh.sh', 'headless'], stdin_open=True)
+        service.setdefault('environment', {}).update(DSH_HEADLESS_MODEL=model or '',
+                                                     DSH_HEADLESS_EFFORT=effort or '')
+        generated = Path(self.command[-1]).parent / 'headless.json'
+        generated.write_text(json.dumps(config), encoding='utf-8')
+        self.command = self.base_command + ['-f', str(generated)]
 
     def check_config(self):
         config = json.loads(self.compose('config', '--format', 'json', capture=True))

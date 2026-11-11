@@ -10,9 +10,14 @@ It needs Python and Git, but no Docker daemon or provider key. Tests use tempora
 Git repositories and fake Docker resources to cover transfer/import boundaries,
 profiles, Compose validation, task records, integration, cleanup, discard, and
 installer updates. They leave active tasks alone.
+Headless tests cover argument parsing, file/stdin prompts, shared web startup,
+the exact Docker commands, unchanged isolation settings, private prompt/key
+handling, streamed events, completed/failed/error/timeout outcomes, interruption,
+web resume with the recorded image and volumes, `show`, and older records.
 When Node is available on the host, the suite also runs the Cordis composition
-tests through Node's built-in test runner. The Docker composition smoke test
-checks the same parser and runtime behavior without requiring host Node.
+tests and generated model/effort overlays through Node's built-in test runner.
+The Docker composition smoke test checks the same parser and runtime behavior
+without requiring host Node.
 
 ## Docker smoke tests
 
@@ -38,6 +43,7 @@ Once `dsh-sandbox:local` is cached, run the task smoke test:
 ```sh
 python tests/task_docker_smoke.py
 python tests/task_docker_smoke.py --discard
+python tests/task_docker_smoke.py --headless
 python tests/submodules_docker_smoke.py
 ```
 
@@ -45,9 +51,15 @@ The first exercises startup, browser URL retrieval, repeated review exports,
 integration of the agent's diff, refusal of a dirty target, and cleanup. The
 `--discard` variant checks deletion of dirty and ignored workspace files while
 preserving DSH home history, then repeats discard to check that it's safe.
+The `--headless` variant reaches the real DSH runner without a provider key,
+checks a credential failure event and recorded outcome, exercises bootstrap/Cordis
+order, the effort overlay and isolation, exports a bundle, resumes the web UI on
+the recorded image and volumes, then reviews and cleans up the fixture. It makes
+no model request.
 
-Both use a temporary registry, a synthetic repository, and an available localhost
-port. They clear the provider key, refuse image builds, and make no model calls.
+All task variants use a temporary registry, a synthetic repository, and an
+available localhost port. They clear the provider key, refuse image builds, and
+make no model calls.
 Their final teardown removes only their recorded fixture containers, networks,
 and volumes, including the fixture home volume after checking its preservation.
 

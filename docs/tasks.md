@@ -45,8 +45,67 @@ dsh-task resume <task-id>
 ```
 
 `show` prints the saved manifest. `url` prints the login URL, and `resume` starts
-the existing stopped container before printing it. Resume uses the recorded
-container; it doesn't recreate it with changed profile settings.
+the existing stopped web container before printing it. A headless task's first
+resume replaces its stopped container with the web service, using the recorded
+image and the same home/workspace volumes. Later resumes start that web container.
+Resume doesn't select a new profile or rerun the headless prompt.
+
+## Run a headless task
+
+```sh
+dsh-task run --task benchmark --repo /path/to/prepared-repo --prompt-file /private/prompt.txt --timeout 600
+```
+
+`run` shares startup with `start`: it resolves the profile, builds missing images,
+transfers the repository, and records the task and volumes. It accepts `--profile`,
+`--repo`, `--target`, `--revision`, `--snapshot`, `--include-untracked`, and
+`--rebuild` with the same meanings. It publishes no port and opens no browser.
+Rebuild cached images after updating the runtime scripts in this repository.
+
+| Run option | Effect |
+| --- | --- |
+| `--prompt-file PATH` | Required UTF-8 prompt file. Use `-` to read stdin; empty prompts fail before startup. |
+| `--events PATH` | Write stdout events to a new host NDJSON file. Existing files are refused; the parent directory must exist. Defaults to `events.ndjson` in the task's state directory. |
+| `--timeout SECONDS` | Limit the headless process after workspace setup. Must be positive and finite; omitted means no limit. |
+| `--model MODEL` | Override the composed default model. `provider/model` also selects the registered provider route; a bare model ID keeps the provider. |
+| `--effort EFFORT` | Override `reasoningEffort` in the shared model configuration. Supported values depend on the selected provider and model. |
+
+Model and effort overrides use a final Cordis patch over DSH's composed
+`agent-default-model` configuration. Unspecified fields keep their composed
+values, so `--effort` alone preserves the configured provider and model. These
+options don't add provider routes. Plugins still supply their ordered
+`cordis.yml` patches and bootstrap hooks. The hooks run as the agent before DSH;
+their output stays outside the JSON stream. Headless runs use
+`--permission-mode danger-full-access --approval-policy never`, matching the
+container's permission preset.
+
+The prompt travels through Docker stdin into the recorded container, without a
+host mount or a command-line argument. Provider credentials use the launch
+environment or the profile's `key_file`, with the same precedence as web tasks.
+Credentials saved in the GUI are ignored by headless mode.
+
+The first output line is `Task ID: <id>`, followed by `Events: <path>`. Events
+stream directly to that host file while the command waits. The optional
+`headless` object in `show` records UTC `started_at` and `ended_at`, the container's
+`exit_code`, `final_reason` from `final.reason.kind`, an `error` event's message
+or launcher failure, the `events` path, `session_id`, `timed_out`, and requested
+`model`/`effort`. Records from older tasks need no new fields.
+
+Exit status is 0 only when the process and Docker attachment exit 0, the final
+event reports `completed`, and no stream error or timeout occurred. Other run
+outcomes exit 1; invalid arguments exit 2. A timeout stops the recorded container
+with a ten-second grace period before Docker forces termination. It keeps the
+volumes and partial event stream. The timeout excludes transfer and image builds.
+
+Both successful and failed runs can use normal export and review, direct bundle
+export, cleanup, or discard. For a benchmark bundle containing working files:
+
+```sh
+dsh-task export <task-id> --snapshot --include-untracked --bundle /private/work.bundle
+```
+
+Use `resume <task-id>` to inspect the session in the web UI; `url` becomes useful
+after that first web startup. A headless outcome remains recorded after resume.
 
 ## Export and review
 

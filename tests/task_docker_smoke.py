@@ -35,11 +35,79 @@ def main():
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
             port = listener.getsockname()[1]
-        registry.write_text(json.dumps({'synthetic': dict(repo=str(repo), port=port)}))
+        profile = dict(repo=str(repo), port=port)
+        if '--headless' in sys.argv:
+            plugin = root / 'headless-plugin'
+            runtime = plugin / 'runtime'
+            runtime.mkdir(parents=True)
+            (plugin / 'plugin.json').write_text(json.dumps(dict(version=1, runtime='runtime')))
+            (runtime / 'bootstrap.sh').write_text(
+                'set -eu\nprintf "bootstrap\\n" >> /home/agent/headless-order\nprintf "hook output\\n"\n', newline='\n')
+            (runtime / 'loaded.mjs').write_text(
+                "import { appendFileSync } from 'node:fs';\n"
+                "export const name = 'smoke-headless';\n"
+                "export function apply() { appendFileSync('/home/agent/headless-order', 'cordis\\n'); }\n", newline='\n')
+            (runtime / 'cordis.yml').write_text(
+                '- insert:\n    - id: smoke-headless\n      name: ./loaded.mjs\n', newline='\n')
+            profile['plugins'] = [str(plugin)]
+        registry.write_text(json.dumps({'synthetic': profile}))
         task = None
         with patch.object(tasks.dsh, 'profiles_path', return_value=registry), \
                 patch.object(tasks.dsh.Sandbox, 'build', side_effect=AssertionError('Must reuse cached image')):
             try:
+                if '--headless' in sys.argv:
+                    prompt = root / 'prompt.txt'
+                    prompt.write_text('Describe the file in this repository.\n', encoding='utf-8')
+                    with redirect_stdout(io.StringIO()) as output:
+                        result = tasks.main(['run', '--profile', 'synthetic', '--task', 'headless-smoke',
+                            '--prompt-file', str(prompt), '--snapshot', '--include-untracked',
+                            '--effort', 'high', '--timeout', '60'])
+                    records = list(tasks.state_root().glob('*/manifest.json'))
+                    assert len(records) == 1
+                    directory = records[0].parent
+                    task = json.loads(records[0].read_text())
+                    run = task['headless']
+                    assert result == 1 and run['exit_code'] != 0 and not run['timed_out'], run
+                    assert run['started_at'] and run['ended_at']
+                    assert output.getvalue().startswith('Task ID: ' + task['id'] + '\n')
+                    assert '?token=' not in output.getvalue()
+                    events = [json.loads(line) for line in Path(run['events']).read_text(encoding='utf-8').splitlines()]
+                    assert events and events[-1]['type'] in ('error', 'final'), events
+                    assert run['error'] or run['final_reason'] == 'error', run
+                    # Reject a CLI/configuration failure masquerading as a credential failure.
+                    failure = json.dumps(events[-1]).lower()
+                    assert any(word in failure for word in ('key', 'credential', 'authentication', 'sign in')), failure
+                    info = json.loads(tasks.dsh.run('docker', 'inspect', task['container'], capture=True))[0]
+                    assert not info['State']['Running']
+                    assert not info['HostConfig']['PortBindings']
+                    assert info['HostConfig']['ReadonlyRootfs'] and info['HostConfig']['CapDrop'] == ['ALL']
+                    assert 'no-new-privileges:true' in info['HostConfig']['SecurityOpt']
+                    assert info['Config']['User'] == '10001:10001'
+                    assert info['Config']['Cmd'] == ['/opt/dsh/start-dsh.sh', 'headless']
+                    assert (repo / '.git/index').read_bytes() == index
+                    with tasks.sandbox(task) as box, box.maintenance() as container:
+                        assert tasks.dsh.run('docker', 'exec', container, 'cat',
+                            '/home/agent/headless-order', capture=True) == 'bootstrap\ncordis'
+                    bundle = root / 'headless.bundle'
+                    with redirect_stdout(io.StringIO()):
+                        tasks.main(['export', task['id'], '--bundle', str(bundle), '--snapshot', '--include-untracked'])
+                    assert bundle.is_file()
+                    original = task
+                    with redirect_stdout(io.StringIO()) as output:
+                        tasks.main(['resume', task['id']])
+                    task = json.loads(records[0].read_text())
+                    assert task['container'] != original['container']
+                    assert task['volumes'] == original['volumes'] and task['headless'] == run
+                    assert f'http://127.0.0.1:{port}/?token=' in output.getvalue()
+                    info = json.loads(tasks.dsh.run('docker', 'inspect', task['container'], capture=True))[0]
+                    assert info['Image'] == original['resolved']['image']
+                    with tasks.sandbox(task) as box:
+                        review = tasks.export_task(directory, task, box)
+                        review['report'] = tasks.evidence(directory, prompt, 'fixture-review')
+                        tasks.save(directory, task)
+                        tasks.cleanup(directory, task, box)
+                    print('PASS: key-free headless runner and credential failure, Cordis/bootstrap order, effort overlay, event/outcome recording, isolation, direct/review export, web resume, cleanup and home retention.')
+                    return
                 output = io.StringIO()
                 with redirect_stdout(output):
                     tasks.main(['start', '--profile', 'synthetic', '--task', 'smoke', '--snapshot', '--include-untracked'])

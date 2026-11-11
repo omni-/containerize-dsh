@@ -93,9 +93,26 @@ and repository limits.
 If you prefer to skip installation, replace `dsh-task` in these commands with
 `python /path/to/containerize-dsh/dsh_task.py`.
 
+For an automated task without a browser:
+
+```sh
+dsh-task run --task fix-parser --prompt-file /private/prompt.txt --timeout 600 --events /private/events.ndjson
+dsh-task export <task-id> --snapshot --include-untracked --bundle /private/work.bundle
+```
+
+`run` uses the same profiles, transfers, plugins, images, and isolated volumes as
+`start`, with no published port. Supply `DEEPSEEK_API_KEY` or a profile's `key_file`;
+headless mode ignores credentials saved in the GUI. Use `--prompt-file -` to read
+stdin. The task ID is printed first, followed by the events file path. Without
+`--events`, the stream goes into the task's state directory. Exit status is 0 only
+when DSH exits 0 and its final event reports `completed`; failures and timeouts
+exit 1. `show` includes the outcome and session ID. `resume` opens the web UI on the
+same volumes to inspect or continue the session. See
+[headless options](docs/tasks.md#run-a-headless-task) for model and effort selection.
+
 ## Work on a task
 
-Work with DeepSeek in the browser, then export when you're ready to review:
+After a browser session or headless run, export when you're ready to review:
 
 ```text
 dsh-task export <task-id>

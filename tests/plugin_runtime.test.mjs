@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { checkPatches } from '../scripts/plugin-runtime.mjs';
+import { checkPatches, modelPatch } from '../scripts/plugin-runtime.mjs';
 
 const source = (plugin, patches) => ({ plugin, patches });
 const entry = (id, config = {}) => ({ id, name: './plugin.mjs', config });
@@ -9,6 +9,29 @@ const fails = (patches, contribution) => {
   assert.throws(() => checkPatches(patches), error =>
     error.message.includes('/one and /two') && error.message.includes(contribution));
 };
+
+test('headless model overlay keeps the complete composed selection and supports effort alone', () => {
+  const config = { provider: 'custom', model: { __jsExpr: 'process.env.MODEL' }, reasoningEffort: 'low' };
+  const entries = [{ group: true, config: [{ id: 'agent-default-model', config }] }];
+  const before = structuredClone(entries);
+  assert.deepEqual(modelPatch(entries, undefined, 'high'), [{ id: 'agent-default-model',
+    config: { ...config, reasoningEffort: 'high' } }]);
+  assert.deepEqual(modelPatch(entries, 'new-model', undefined), [{ id: 'agent-default-model',
+    config: { provider: 'custom', model: 'new-model', reasoningEffort: 'low' } }]);
+  assert.deepEqual(modelPatch(entries, 'deepseek/deepseek-chat', 'high'), [{ id: 'agent-default-model',
+    config: { provider: 'deepseek', model: 'deepseek-chat', reasoningEffort: 'high' } }]);
+  assert.deepEqual(entries, before);
+});
+
+test('headless model overlay fails closed when the composed default is missing or ambiguous', () => {
+  const row = { id: 'agent-default-model', config: { provider: 'one', model: 'two' } };
+  for (const entries of [[], [row, row], [{ ...row, config: {} }]]) {
+    assert.throws(() => modelPatch(entries, 'model', 'high'), /Cannot resolve/);
+  }
+  for (const model of ['/model', 'provider/']) {
+    assert.throws(() => modelPatch([row], model, undefined), /provider\/model/);
+  }
+});
 
 test('independent inserts, groups, and disjoint entry fields compose without modifying input', () => {
   const patches = [source('/one', [insert(entry('one')), { id: 'core', disabled: false },
