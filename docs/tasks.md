@@ -75,9 +75,8 @@ Model and effort overrides use a final Cordis patch over DSH's composed
 values, so `--effort` alone preserves the configured provider and model. These
 options don't add provider routes. Plugins still supply their ordered
 `cordis.yml` patches and bootstrap hooks. The hooks run as the agent before DSH;
-their output stays outside the JSON stream. Headless runs use
-`--permission-mode danger-full-access --approval-policy never`, matching the
-container's permission preset.
+their output stays outside the JSON stream. Headless runs use the container's
+`DSH_PERMISSION_MODE=danger-full-access` preset.
 
 The prompt travels through Docker stdin into the recorded container, without a
 host mount or a command-line argument. Provider credentials use the launch

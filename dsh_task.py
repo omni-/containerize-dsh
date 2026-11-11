@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 import webbrowser
@@ -427,6 +428,7 @@ def read_prompt(path):
 def read_outcome(path):
     outcome = dict(session_id=None, final_reason=None, error=None)
     last = None
+    turn_reason = None
     with path.open('rb') as stream:
         for line in stream:
             try:
@@ -439,9 +441,19 @@ def read_outcome(path):
             last = event['type']
             if last == 'session' and isinstance(event.get('sessionId'), str):
                 outcome['session_id'] = event['sessionId']
+            elif last == 'status' and event.get('phase') == 'turn_end':
+                # DSH 0.2.1-rc.2 puts the outcome here; its final event carries only text.
+                reason = event.get('reason')
+                turn_reason = None
+                if isinstance(reason, dict) and isinstance(reason.get('kind'), str):
+                    turn_reason = reason['kind']
+                    error = reason.get('error')
+                    message = error.get('message') if isinstance(error, dict) else None
+                    if turn_reason == 'error' and isinstance(message, str) and message:
+                        outcome['error'] = message
             elif last == 'final':
                 reason = event.get('reason')
-                outcome['final_reason'] = None
+                outcome['final_reason'] = turn_reason
                 if isinstance(reason, dict) and isinstance(reason.get('kind'), str):
                     outcome['final_reason'] = reason['kind']
             elif last == 'error':
@@ -454,6 +466,14 @@ def read_outcome(path):
 
 def timestamp():
     return datetime.now(timezone.utc).isoformat()
+
+
+def send_prompt(stream, prompt):
+    try:
+        stream.write(prompt)
+        stream.flush()
+    except OSError:
+        pass  # The container exited before reading; the run's outcome records why.
 
 
 def stop_headless(task, process):
@@ -477,18 +497,16 @@ def run_task(args):
     prompt = read_prompt(args.prompt_file)
     with setup_task(args) as (directory, task, box):
         events = Path(args.events).expanduser().resolve() if args.events else directory / 'events.ndjson'
-        with events.open('xb') as output, tempfile.TemporaryFile() as source:
-            source.write(prompt)
-            source.seek(0)
+        with events.open('xb') as output:
             print('Events:', events, flush=True)
             outcome = dict(started_at=timestamp(), ended_at=None, exit_code=None,
                            events=str(events), session_id=None, final_reason=None,
                            error=None, timed_out=False, model=args.model, effort=args.effort)
             task.update(headless=outcome, container_mode='headless')
             save(directory, task)
-            process = None
+            process = writer = None
             try:
-                box.headless(args.model, args.effort)
+                box.headless(args.model, args.effort, len(prompt))
                 box.compose('create', '--no-build', 'dsh')
                 cid = box.compose('ps', '-aq', 'dsh', capture=True)
                 info = json.loads(dsh.run('docker', 'inspect', cid, capture=True))[0]
@@ -497,7 +515,11 @@ def run_task(args):
                 task['resolved']['image'] = info['Image']
                 save(directory, task)
                 process = subprocess.Popen(['docker', 'start', '--attach', '--interactive', task['container']],
-                                           stdin=source, stdout=output, stderr=subprocess.DEVNULL)
+                                           stdin=subprocess.PIPE, stdout=output, stderr=subprocess.DEVNULL)
+                # Docker Desktop drops attached output once the client's stdin ends. The start script
+                # reads exactly the prompt's bytes, so stdin stays open until the run finishes.
+                writer = threading.Thread(target=send_prompt, args=(process.stdin, prompt), daemon=True)
+                writer.start()
                 try:
                     process.wait(timeout=args.timeout)
                 except subprocess.TimeoutExpired:
@@ -519,6 +541,13 @@ def run_task(args):
                 if process is not None and process.poll() is None:
                     stop_headless(task, process)
             finally:
+                if writer is not None:
+                    writer.join(timeout=10)
+                if process is not None:
+                    try:
+                        process.stdin.close()
+                    except OSError:
+                        pass
                 output.flush()
                 parsed = read_outcome(events)
                 outcome.update(session_id=parsed['session_id'], final_reason=parsed['final_reason'])

@@ -75,7 +75,7 @@ def main():
                     assert events and events[-1]['type'] in ('error', 'final'), events
                     assert run['error'] or run['final_reason'] == 'error', run
                     # Reject a CLI/configuration failure masquerading as a credential failure.
-                    failure = json.dumps(events[-1]).lower()
+                    failure = json.dumps(events).lower()
                     assert any(word in failure for word in ('key', 'credential', 'authentication', 'sign in')), failure
                     info = json.loads(tasks.dsh.run('docker', 'inspect', task['container'], capture=True))[0]
                     assert not info['State']['Running']

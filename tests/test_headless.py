@@ -121,16 +121,24 @@ class HeadlessTaskTests(unittest.TestCase):
                 return self.cid
             raise AssertionError(args)
 
+        test = self
+
+        class PromptPipe(io.BytesIO):
+            def close(self):
+                test.received_prompt = self.getvalue()
+                super().close()
+
         def launch(command, *, stdin, stdout, stderr):
             self.launch_command = command
             self.launch_stderr = stderr
-            self.received_prompt = stdin.read()
+            self.assertIs(stdin, subprocess.PIPE)
             stdout.write(self.events)
             stdout.flush()
             self.streamed_before_wait = True
             waits = 0
             process = Mock()
             process.returncode = None
+            process.stdin = PromptPipe()
 
             def wait(timeout=None):
                 nonlocal waits
@@ -148,7 +156,7 @@ class HeadlessTaskTests(unittest.TestCase):
             return process
 
         self.launch = Mock(side_effect=launch)
-        local_subprocess = SimpleNamespace(Popen=self.launch, DEVNULL=subprocess.DEVNULL,
+        local_subprocess = SimpleNamespace(Popen=self.launch, DEVNULL=subprocess.DEVNULL, PIPE=subprocess.PIPE,
             CalledProcessError=subprocess.CalledProcessError, TimeoutExpired=subprocess.TimeoutExpired)
         patches = [
             patch.object(tasks, 'state_root', return_value=self.root / 'tasks'),
@@ -189,7 +197,7 @@ class HeadlessTaskTests(unittest.TestCase):
         self.assertEqual(self.launch_command, ['docker', 'start', '--attach', '--interactive', self.cid])
         self.assertEqual(self.launch_stderr, subprocess.DEVNULL)
         self.process.wait.assert_called_once_with(timeout=30)
-        self.box.headless.assert_called_once_with(None, None)
+        self.box.headless.assert_called_once_with(None, None, len(self.prompt))
         self.box.compose.assert_any_call('create', '--no-build', 'dsh')
         self.box.compose.assert_any_call('ps', '-aq', 'dsh', capture=True)
         self.assertNotIn('up', [call.args[0] for call in self.box.compose.call_args_list])
@@ -236,7 +244,7 @@ class HeadlessTaskTests(unittest.TestCase):
         self.assertEqual(self.task['headless']['events'], str(destination))
         self.assertEqual(self.received_prompt, self.prompt)
         self.box.build.assert_called_once()
-        self.box.headless.assert_called_once_with('deepseek/deepseek-chat', 'high')
+        self.box.headless.assert_called_once_with('deepseek/deepseek-chat', 'high', len(self.prompt))
         args = self.transfer.call_args.args[1]
         self.assertTrue(args.snapshot and args.include_untracked)
 
@@ -308,6 +316,20 @@ class HeadlessTaskTests(unittest.TestCase):
                 path.write_bytes(events)
                 outcome = tasks.read_outcome(path)
                 self.assertTrue(outcome['error'] or outcome['final_reason'] != 'completed')
+
+    def test_turn_end_reason_decides_when_final_has_only_text(self):
+        turn_end = lambda reason: dict(type='status', phase='turn_end', turn=1, reason=reason)
+        final = dict(type='final', text='')
+        missing_key = dict(kind='error', error=dict(message='no API key', code='MISSING_CREDENTIAL'))
+        for events, expected in ((ndjson(SESSION, turn_end(dict(kind='completed')), final), ('completed', None)),
+                                 (ndjson(SESSION, turn_end(missing_key), final), ('error', 'no API key'))):
+            with self.subTest(expected=expected):
+                path = self.root / 'synthetic-events.ndjson'
+                path.write_bytes(events)
+
+                outcome = tasks.read_outcome(path)
+
+                self.assertEqual((outcome['final_reason'], outcome['error']), expected)
 
     def test_timeout_ownership_refusal_never_stops_an_unverified_container(self):
         self.timeout = True
@@ -390,13 +412,14 @@ class HeadlessComposeTests(unittest.TestCase):
             box.command = ['docker', 'compose', '-f', str(Path(temp) / 'composed.json')]
             box.base_command = ['docker', 'compose', '--project-name', 'fixture']
             box.compose = Mock(return_value=json.dumps(config))
-            box.headless('provider/model', 'high')
+            box.headless('provider/model', 'high', 12)
             generated = json.loads((Path(temp) / 'headless.json').read_text())
         expected = copy.deepcopy(config)
         service = expected['services']['dsh']
         service.pop('ports')
         service.update(command=['/opt/dsh/start-dsh.sh', 'headless'], stdin_open=True)
-        service['environment'].update(DSH_HEADLESS_MODEL='provider/model', DSH_HEADLESS_EFFORT='high')
+        service['environment'].update(DSH_HEADLESS_MODEL='provider/model', DSH_HEADLESS_EFFORT='high',
+                                      DSH_PROMPT_BYTES='12')
         self.assertEqual(generated, expected)
         self.assertEqual(box.command[:len(box.base_command)], box.base_command)
         self.assertNotIn('private-key-sentinel', str(box.command))

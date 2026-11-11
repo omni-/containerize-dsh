@@ -31,7 +31,10 @@ if [ "$mode" = headless ]; then
         node /opt/dsh/plugin-runtime.mjs headless-model
         set -- "$@" --patch /tmp/dsh-headless-model.json
     fi
-    exec "$@" --json --permission-mode danger-full-access --approval-policy never -
+    # DSH 0.2.1-rc.2 reads the permission mode from DSH_PERMISSION_MODE, not flags.
+    # Compose keeps the container's stdin open after the prompt, so read exactly its bytes.
+    head -c "${DSH_PROMPT_BYTES:?}" | "$@" --json -
+    exit 0
 fi
 # DSH listens on loopback. Docker publishes this relay only on host localhost.
 socat TCP-LISTEN:3081,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:3080 &

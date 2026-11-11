@@ -310,14 +310,15 @@ class Sandbox:
     def compose(self, *args, capture=False):
         return run(*self.command, *args, capture=capture, env=self.env)
 
-    def headless(self, model=None, effort=None):
+    def headless(self, model, effort, prompt_bytes):
         # Derive only from the already validated service, retaining every isolation setting.
         config = json.loads(self.compose('config', '--format', 'json', capture=True))
         service = config['services']['dsh']
         service.pop('ports', None)
         service.update(command=['/opt/dsh/start-dsh.sh', 'headless'], stdin_open=True)
         service.setdefault('environment', {}).update(DSH_HEADLESS_MODEL=model or '',
-                                                     DSH_HEADLESS_EFFORT=effort or '')
+                                                     DSH_HEADLESS_EFFORT=effort or '',
+                                                     DSH_PROMPT_BYTES=str(prompt_bytes))
         generated = Path(self.command[-1]).parent / 'headless.json'
         generated.write_text(json.dumps(config), encoding='utf-8')
         self.command = self.base_command + ['-f', str(generated)]
