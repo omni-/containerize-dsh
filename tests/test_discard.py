@@ -139,7 +139,7 @@ class DiscardTests(unittest.TestCase):
     def setup_only(self):
         """A task whose start failed before Docker resources or identities were recorded."""
         for key in ('container', 'volume_created', 'integrations'):
-            del self.task[key]
+            self.task.pop(key, None)
         tasks.save(self.directory, self.task)
         self.containers.clear()
         self.volumes.clear()
@@ -170,10 +170,38 @@ class DiscardTests(unittest.TestCase):
 
     def test_setup_only_task_refuses_unrecorded_leftover_volume(self):
         self.setup_only()
-        self.volumes.add('fixture_workspace')
-        with self.assertRaisesRegex(ValueError, 'ownership changed'):
-            tasks.discard(self.directory, self.task)
-        self.assertEqual(self.removed, [])
+        self.volumes.update({'fixture_workspace', 'fixture_home'})
+        for created in ('original', None):
+            with self.subTest(created=created):
+                # Docker may omit CreatedAt; None must not match a missing record.
+                self.created = created
+                with self.assertRaisesRegex(ValueError, 'ownership changed'):
+                    tasks.discard(self.directory, self.task)
+                self.assertEqual(self.removed, [])
+                self.assertFalse(self.task.get('discard_started'))
+
+    def test_setup_only_task_rechecks_namespace_after_confirmation(self):
+        def appear_volume():
+            self.volumes.add('fixture_workspace')
+
+        def appear_container():
+            self.containers.add('foreign-id')
+
+        for appear in (appear_volume, appear_container):
+            with self.subTest(appear=appear.__name__):
+                self.setup_only()
+                original = (self.directory / 'manifest.json').read_bytes()
+
+                def confirm(prompt):
+                    appear()
+                    return 'y'
+
+                with patch('builtins.input', side_effect=confirm), \
+                        self.assertRaisesRegex(ValueError, 'changed during confirmation'):
+                    tasks.main(['discard', self.task['id']])
+                self.assertEqual(self.stopped, [])
+                self.assertEqual(self.removed, [])
+                self.assertEqual((self.directory / 'manifest.json').read_bytes(), original)
 
     def test_retry_after_resources_removed_before_final_save(self):
         self.task['discard_started'] = True
