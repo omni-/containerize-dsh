@@ -154,6 +154,8 @@ untracked, and ignored files, without requiring export, review, or integration.
 Only `y` (case-insensitive, allowing surrounding whitespace) at the `[y/n]` prompt
 proceeds; empty, other, or interrupted input cancels. Ownership checks still apply.
 Discard leaves host worktrees and the resources cleanup normally preserves alone.
+A task whose setup failed before creating its container or volumes has nothing to
+remove; after confirmation, discard just marks its record discarded.
 Repeating a completed discard is safe; retry an interrupted discard to finish it.
 
 ## Records and recovery

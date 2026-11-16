@@ -136,6 +136,45 @@ class DiscardTests(unittest.TestCase):
         tasks.main(['discard', self.task['id']])
         self.assertEqual(self.removed, ['owned-id', 'fixture_workspace'])
 
+    def setup_only(self):
+        """A task whose start failed before Docker resources or identities were recorded."""
+        for key in ('container', 'volume_created', 'integrations'):
+            del self.task[key]
+        tasks.save(self.directory, self.task)
+        self.containers.clear()
+        self.volumes.clear()
+
+    def test_setup_only_task_is_marked_discarded_without_docker_changes(self):
+        self.setup_only()
+        tasks.main(['discard', self.task['id']])
+        saved = json.loads((self.directory / 'manifest.json').read_text())
+        self.assertTrue(saved['discarded'] and saved['cleaned'])
+        self.assertEqual(self.stopped, [])
+        self.assertEqual(self.removed, [])
+        with patch('builtins.input', side_effect=AssertionError('Already discarded must be a no-op')):
+            tasks.main(['discard', self.task['id']])
+
+    def test_setup_only_task_still_requires_confirmation(self):
+        self.setup_only()
+        original = (self.directory / 'manifest.json').read_bytes()
+        with patch('builtins.input', return_value='n'):
+            tasks.main(['discard', self.task['id']])
+        self.assertEqual((self.directory / 'manifest.json').read_bytes(), original)
+
+    def test_setup_only_task_refuses_foreign_project_container(self):
+        self.setup_only()
+        self.containers.add('foreign-id')
+        with self.assertRaisesRegex(ValueError, 'namespace'):
+            tasks.discard(self.directory, self.task)
+        self.assertFalse(self.task.get('discard_started'))
+
+    def test_setup_only_task_refuses_unrecorded_leftover_volume(self):
+        self.setup_only()
+        self.volumes.add('fixture_workspace')
+        with self.assertRaisesRegex(ValueError, 'ownership changed'):
+            tasks.discard(self.directory, self.task)
+        self.assertEqual(self.removed, [])
+
     def test_retry_after_resources_removed_before_final_save(self):
         self.task['discard_started'] = True
         self.containers.clear()

@@ -86,8 +86,10 @@ def docker_list(*args):
     return dsh.run('docker', *args, capture=True).splitlines()
 
 
-def owned(task, allow_missing=False):
-    """Verify exact volume creation identity and all consumers before any stop/removal."""
+def owned(task, allow_missing=()):
+    """Verify exact volume creation identity and all consumers before any stop/removal.
+
+    allow_missing names the volume kinds that may already be gone."""
     project_containers = docker_list('ps', '-aq', '--no-trunc', '--filter',
                                      'label=com.docker.compose.project=' + task['resolved']['name'])
     if any(cid != task.get('container') for cid in project_containers):
@@ -95,14 +97,14 @@ def owned(task, allow_missing=False):
     for kind, name in task['volumes'].items():
         names = docker_list('volume', 'ls', '--format', '{{.Name}}')
         if name not in names:
-            if allow_missing and kind == 'workspace':
+            if kind in allow_missing:
                 continue
             raise ValueError(f'Missing task volume: {name}')
         info = json.loads(dsh.run('docker', 'volume', 'inspect', name, capture=True))[0]
         labels = info.get('Labels') or {}
         if (labels.get('com.docker.compose.project') != task['resolved']['name']
                 or labels.get('com.docker.compose.volume') != kind
-                or info.get('CreatedAt') != task['volume_created'][kind]):
+                or info.get('CreatedAt') != task.get('volume_created', {}).get(kind)):
             raise ValueError('Volume ownership changed')
         consumers = docker_list('ps', '-aq', '--filter', f'volume={name}')
         for cid in consumers:
@@ -266,7 +268,7 @@ def cleanup(directory, task, box, require_integrated=False):
                                    '--format=%(refname)', 'refs/dsh-submodules'):
                             raise ValueError(f'Integration submodule has unpreserved refs: {name}')
             removable.append(work)
-    owned(task, allow_missing=task.get('cleanup_verified', False))
+    owned(task, allow_missing=('workspace',) if task.get('cleanup_verified') else ())
     names = docker_list('volume', 'ls', '--format', '{{.Name}}')
     if task['volumes']['workspace'] in names:
         box.compose('stop')
@@ -314,7 +316,13 @@ def discard(directory, task):
     """Explicitly abandon container work; keep host worktrees, home and records."""
     if task.get('cleaned'):
         return True
-    owned(task, allow_missing=task.get('discard_started', False))
+    # A task that failed during setup may have no container and no volumes; there is
+    # nothing to remove, so discard only needs to confirm and update the record.
+    existing = docker_list('volume', 'ls', '--format', '{{.Name}}')
+    empty = not task.get('container') and not any(v in existing for v in task['volumes'].values())
+    # Once discard has started, the workspace may already be removed.
+    missing = tuple(task['volumes']) if empty else ('workspace',)
+    owned(task, allow_missing=missing if empty or task.get('discard_started') else ())
     try:
         answer = input(f'Permanently discard task {task["id"]} and ALL workspace files '
                        '(including uncommitted, untracked and ignored files)? [y/n] ').strip().lower()
@@ -329,11 +337,11 @@ def discard(directory, task):
     if cid and cid in docker_list('ps', '-aq', '--no-trunc'):
         dsh.run('docker', 'stop', cid)
         # Recheck ownership after stopping, before removing anything.
-        owned(task, allow_missing=True)
+        owned(task, allow_missing=missing)
         dsh.run('docker', 'rm', cid)
     task['container'] = None
     save(directory, task)
-    owned(task, allow_missing=True)
+    owned(task, allow_missing=missing)
     workspace = task['volumes']['workspace']
     if workspace in docker_list('volume', 'ls', '--format', '{{.Name}}'):
         dsh.run('docker', 'volume', 'rm', workspace)
