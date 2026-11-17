@@ -103,9 +103,11 @@ def owned(task, allow_missing=False):
             raise ValueError(f'Missing task volume: {name}')
         info = json.loads(dsh.run('docker', 'volume', 'inspect', name, capture=True))[0]
         labels = info.get('Labels') or {}
+        # Without a recorded creation time, a same-named volume cannot be proven ours.
+        recorded = task.get('volume_created', {}).get(kind)
         if (labels.get('com.docker.compose.project') != task['resolved']['name']
                 or labels.get('com.docker.compose.volume') != kind
-                or info.get('CreatedAt') != task['volume_created'][kind]):
+                or not recorded or info.get('CreatedAt') != recorded):
             raise ValueError('Volume ownership changed')
         consumers = docker_list('ps', '-aq', '--filter', f'volume={name}')
         for cid in consumers:
@@ -313,11 +315,23 @@ def cleanup(directory, task, box, require_integrated=False):
     save(directory, task)
 
 
+def unused_namespace(task):
+    """True when the task has no recorded container and Docker holds none of its resources."""
+    volumes = docker_list('volume', 'ls', '--format', '{{.Name}}')
+    return (not task.get('container')
+            and not any(name in volumes for name in task['volumes'].values())
+            and not docker_list('ps', '-aq', '--no-trunc', '--filter',
+                                'label=com.docker.compose.project=' + task['resolved']['name']))
+
+
 def discard(directory, task):
     """Explicitly abandon container work; keep host worktrees, home and records."""
     if task.get('cleaned'):
         return True
-    owned(task, allow_missing=task.get('discard_started', False))
+    # A task whose setup failed before creating Docker resources has only its record.
+    record_only = unused_namespace(task)
+    if not record_only:
+        owned(task, allow_missing=task.get('discard_started', False))
     try:
         answer = input(f'Permanently discard task {task["id"]} and ALL workspace files '
                        '(including uncommitted, untracked and ignored files)? [y/n] ').strip().lower()
@@ -326,6 +340,13 @@ def discard(directory, task):
     if answer != 'y':
         print('Discard cancelled; no resources changed.')
         return False
+    if record_only:
+        # Never reach volume removal: anything that appeared during the prompt is unverified.
+        if not unused_namespace(task):
+            raise ValueError('Task namespace changed during confirmation; nothing was removed. Retry discard.')
+        task.update(discard_started=True, discarded=True, cleaned=True)
+        save(directory, task)
+        return True
     task['discard_started'] = True
     save(directory, task)
     cid = task.get('container')
